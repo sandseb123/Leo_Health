@@ -15,7 +15,7 @@ dependencies = []  # Zero dependencies for Leo Core
 dev = ["pytest>=7.0"]
 
 [project.scripts]
-leo = "leo_health.cli:app"
+leo = "leo_health.status:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
