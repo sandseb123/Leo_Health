@@ -143,9 +143,9 @@ FROM workouts GROUP BY activity ORDER BY sessions DESC;
 ### Whoop (CSV exports)
 | Data | Table | Metrics |
 |------|-------|---------|
-| Recovery | `whoop_recovery` | Score, HRV, resting HR, SpO2 |
+| Recovery | `whoop_recovery` | Score, HRV, resting HR, SpO2, respiratory rate, blood oxygen trend |
 | Strain | `whoop_strain` | Day strain, calories, max/avg HR |
-| Sleep | `sleep` | Performance %, time in bed, stages |
+| Sleep | `sleep` | Performance %, sleep consistency score, time in bed, stages |
 
 ---
 

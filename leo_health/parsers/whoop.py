@@ -43,6 +43,14 @@ def _float(val: str) -> Optional[float]:
         return None
 
 
+def _str(val: str) -> Optional[str]:
+    """Safely parse string, return None if empty."""
+    if val is None:
+        return None
+    s = str(val).strip()
+    return s if s else None
+
+
 def _normalize_header(header: str) -> str:
     """Lowercase, strip, replace spaces/special chars for consistent matching."""
     return header.lower().strip().replace(" ", "_").replace("(", "").replace(")", "").replace("%", "pct").replace("/", "_per_")
@@ -88,6 +96,17 @@ def _parse_recovery_row(row: dict) -> Optional[dict]:
     spo2 = (_float(norm.get("spo2_pct", "")) or
             _float(norm.get("blood_oxygen_pct", "")) or
             _float(norm.get("spo2", "")))
+    respiratory_rate = (
+        _float(norm.get("respiratory_rate", "")) or
+        _float(norm.get("respiratory_rate_br_per_min", "")) or
+        _float(norm.get("respiratory_rate_breaths_per_min", "")) or
+        _float(norm.get("respiratory_rate_rpm", ""))
+    )
+    blood_oxygen_trend = (
+        _str(norm.get("blood_oxygen_trend", "")) or
+        _str(norm.get("spo2_trend", "")) or
+        _str(norm.get("blood_oxygen_pct_trend", ""))
+    )
 
     if not date:
         return None
@@ -100,6 +119,8 @@ def _parse_recovery_row(row: dict) -> Optional[dict]:
         "resting_heart_rate": rhr,
         "spo2_pct": spo2,
         "skin_temp_celsius": _float(norm.get("skin_temp_celsius", "") or norm.get("skin_temp", "")),
+        "respiratory_rate": respiratory_rate,
+        "blood_oxygen_trend": blood_oxygen_trend,
     }
 
 
@@ -140,6 +161,11 @@ def _parse_sleep_row(row: dict) -> Optional[dict]:
         "recorded_at": _iso(date),
         "sleep_performance_pct": (_float(norm.get("sleep_performance_pct", "")) or
                                    _float(norm.get("sleep_performance", ""))),
+        "sleep_consistency_score": (
+            _float(norm.get("sleep_consistency_score", "")) or
+            _float(norm.get("sleep_consistency", "")) or
+            _float(norm.get("sleep_consistency_pct", ""))
+        ),
         "time_in_bed_hours": _float(norm.get("time_in_bed_hours", "") or norm.get("total_in_bed_min_min", "")),
         "light_sleep_hours": _float(norm.get("light_sleep_duration_hours", "") or norm.get("light_sleep_min", "")),
         "rem_sleep_hours": _float(norm.get("rem_sleep_duration_hours", "") or norm.get("rem_sleep_min", "")),

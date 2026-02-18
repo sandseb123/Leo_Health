@@ -173,7 +173,7 @@ hrv(id, source, metric, value, unit, recorded_at, device, created_at)
 -- unit: 'ms'
 
 sleep(id, source, stage, start, end, recorded_at, device,
-      sleep_performance_pct, time_in_bed_hours, light_sleep_hours,
+      sleep_performance_pct, sleep_consistency_score, time_in_bed_hours, light_sleep_hours,
       rem_sleep_hours, deep_sleep_hours, awake_hours, disturbances, created_at)
 -- stage: 'asleep' | 'rem' | 'deep' | 'core' | 'in_bed' | 'awake'
 -- Whoop-specific aggregate columns are NULL for Apple Health rows
@@ -185,7 +185,8 @@ workouts(id, source, activity, duration_minutes, distance_km, calories,
 -- distance_km converted from miles (Apple stores in miles)
 
 whoop_recovery(id, source, recorded_at, recovery_score, hrv_ms,
-               resting_heart_rate, spo2_pct, skin_temp_celsius, created_at)
+               resting_heart_rate, spo2_pct, skin_temp_celsius,
+               respiratory_rate, blood_oxygen_trend, created_at)
 -- recovery_score: 0–100
 
 whoop_strain(id, source, recorded_at, day_strain, calories,
