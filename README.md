@@ -6,65 +6,94 @@ Apple Health locks your biometrics in a 4GB XML file. Whoop buries yours in CSVs
 
 **Zero network requests. Runs locally. MIT licensed.**
 
-![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue)
+![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![Zero Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen)
+![Status](https://img.shields.io/badge/status-active-success)
 
-## Why Leo?
+---
 
-- 🔒 **Your data never leaves your machine** — no cloud, no server, no signup
-- ⚡ **60-second parse** — even 4GB Apple Health exports
-- 🛠️ **SQL queryable** — use pandas, Jupyter, R, or any SQLite tool
-- 📦 **Zero dependencies** — pure Python stdlib
-- 🔍 **Auditable** — MIT licensed, read every line
+## What it looks like
+
+```
+╔══════════════════════════════════════════════╗
+║           Leo Health — Status                ║
+╚══════════════════════════════════════════════╝
+
+  ❤️  Heart Rate  (324,116 readings)
+      Average:  84 BPM  (min 32 · max 199)
+      Resting:  56 BPM  (1,023 readings)
+
+  💜  HRV  (6,519 readings)
+      apple_health     78.3 ms  (min 12.4 · max 422.7)
+
+  😴  Sleep  (12,195 sessions)
+      In Bed          ████████████████  6,779
+      Core Sleep      ████░░░░░░░░░░░░  2,050
+      REM             █░░░░░░░░░░░░░░░  796
+      Deep Sleep      █░░░░░░░░░░░░░░░  589
+
+  🏃  Workouts  (1,344 total)
+      running               ████████████  570  40min avg
+      strength training     ██████████░░  476  41min avg
+      walking               █████░░░░░░░  243  63min avg
+
+  Data range: 2021-06-18 → 2026-02-16
+
+  ╔══════════════════════════════════════════╗
+  ║  Database: ~/.leo-health/leo.db          ║
+  ║  Zero network requests. 100% local.      ║
+  ╚══════════════════════════════════════════╝
+```
+
+---
 
 ## Install
+
 ```bash
-pip install leo-health
+git clone https://github.com/sandseb123/Leo_Health.git
+cd Leo_Health
+bash install.sh
 ```
 
-## Quick Start
-```python
-from leo_health.db.ingest import ingest_all
+That's it. Two commands are now available anywhere on your Mac:
 
-ingest_all(
-    apple_health_zip="~/Downloads/export.zip",
-    whoop_folder="~/Downloads/whoop_exports/"
-)
+```bash
+leo          # view your health dashboard
+leo-watch    # start watching Downloads for new exports
 ```
 
-## Query Your Data
-```sql
-SELECT recorded_at, recovery_score, hrv_ms, resting_heart_rate
-FROM whoop_recovery ORDER BY recorded_at DESC LIMIT 7;
+---
 
-SELECT source, ROUND(AVG(value), 1) as avg_hrv FROM hrv GROUP BY source;
+## Get your data in
 
-SELECT stage, COUNT(*) as sessions FROM sleep GROUP BY stage;
+**Step 1 — Export from Apple Health (iPhone):**
+1. Open the Health app
+2. Tap your profile picture → **Export All Health Data**
+3. AirDrop it to your Mac
+
+**Step 2 — Start the watcher:**
+```bash
+leo-watch
 ```
 
-## How to Export Your Data
+**Step 3 — AirDrop your export.zip**
 
-**Apple Health:** Health app → profile picture → Export All Health Data → share export.zip to Mac
+Leo detects it within 10 seconds, parses it automatically, and sends you a macOS notification when done. Your database is updated — no commands needed.
 
-**Whoop:** Whoop app → Profile → Export Data → check email for CSVs
+**For Whoop:** Open Whoop app → Profile → Export Data → check email for CSVs → AirDrop them to your Mac. Leo auto-detects and ingests them too.
+
+---
 
 ## Auto-Ingest via AirDrop ✨
 
-Leo watches your Downloads folder and automatically parses any health export 
-the moment it arrives — no commands needed.
+Leo watches your Downloads folder and automatically parses any health export the moment it arrives — no commands needed after setup.
 
-**Start the watcher:**
-```bash
-python3 -m leo_health.watcher
-```
-
-**Then on your iPhone:**
-1. Open Health app → profile picture → Export All Health Data
-2. AirDrop it to your Mac
-3. Leo detects it within 10 seconds, parses it, and sends you a notification
-
-That's it. Your database is updated automatically every time you export.
+- Checks for new files every 10 seconds
+- Uses ~8MB RAM, near-zero CPU while idle
+- Never processes the same file twice
+- Sends a macOS notification when ingestion completes
+- Runs automatically on login (optional)
 
 **Run Leo automatically on every login:**
 ```bash
@@ -72,29 +101,128 @@ cp com.leohealth.watcher.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.leohealth.watcher.plist
 ```
 
-Leo uses ~8MB RAM and near-zero CPU while watching. You won't notice it's running.
+---
+
+## Query your data
+
+```bash
+sqlite3 ~/.leo-health/leo.db
+```
+
+```sql
+-- Last 7 days of Whoop recovery
+SELECT recorded_at, recovery_score, hrv_ms, resting_heart_rate
+FROM whoop_recovery
+ORDER BY recorded_at DESC LIMIT 7;
+
+-- HRV by source (Apple Watch vs Whoop)
+SELECT source, ROUND(AVG(value), 1) as avg_hrv, COUNT(*) as readings
+FROM hrv GROUP BY source;
+
+-- Sleep stage breakdown
+SELECT stage, COUNT(*) as sessions
+FROM sleep GROUP BY stage ORDER BY sessions DESC;
+
+-- Top workouts by volume
+SELECT activity, COUNT(*) as sessions, ROUND(AVG(calories), 0) as avg_cal
+FROM workouts GROUP BY activity ORDER BY sessions DESC;
+```
+
+---
+
+## What gets parsed
+
+### Apple Health (`export.zip`)
+| Data | Table | Metrics |
+|------|-------|---------|
+| Heart Rate | `heart_rate` | BPM, resting HR, walking avg |
+| HRV | `hrv` | SDNN in milliseconds |
+| Sleep | `sleep` | REM, Deep, Core, Awake stages |
+| Workouts | `workouts` | Activity, duration, distance, calories |
+
+### Whoop (CSV exports)
+| Data | Table | Metrics |
+|------|-------|---------|
+| Recovery | `whoop_recovery` | Score, HRV, resting HR, SpO2 |
+| Strain | `whoop_strain` | Day strain, calories, max/avg HR |
+| Sleep | `sleep` | Performance %, time in bed, stages |
+
+---
 
 ## Privacy
 
-Zero network code. Verify it yourself:
+Leo Core contains zero network code. Verify it yourself:
+
 ```bash
-grep -r "import urllib\|import http\|import requests" leo_health/
-# Returns nothing.
+grep -r "import urllib\|import http\|import requests\|import socket" leo_health/
+# Returns nothing. Zero network imports.
 ```
+
+Your data lives in `~/.leo-health/leo.db` and never leaves your machine.
+
+---
+
+## Who this is for
+
+**Leo Core is a developer tool.** If you're comfortable with Terminal, git clone and `bash install.sh` gets you running in 2 minutes.
+
+**Not a developer?** Leo Pro (coming soon) is a one-click macOS app with a full dashboard — no Terminal required.
+
+---
+
+## Project structure
+
+```
+leo_health/
+├── parsers/
+│   ├── apple_health.py   # SAX streaming parser for export.zip
+│   └── whoop.py          # Auto-detecting CSV parser
+├── db/
+│   ├── schema.py         # SQLite schema — 6 tables
+│   └── ingest.py         # Writes both sources to unified DB
+├── status.py             # leo command — pretty terminal dashboard
+└── watcher.py            # leo-watch command — auto-ingest on AirDrop
+tests/
+└── test_parsers.py
+install.sh                # One-command installer for macOS
+pyproject.toml
+```
+
+---
 
 ## Roadmap
 
 - [x] Apple Health XML parser
 - [x] Whoop CSV parser
 - [x] Normalized SQLite schema
-- [ ] CLI — leo health status (Module 2)
-- [ ] Fitbit support
-- [ ] Leo Pro — AI Health Coach (local LLM, 100% private)
+- [x] `leo` status dashboard
+- [x] `leo-watch` auto-ingest watcher
+- [x] AirDrop → auto-parse workflow
+- [ ] Fitbit CSV support
+- [ ] Garmin support
+- [ ] Leo Pro — AI Health Coach *(local LLM, 100% private)*
+- [ ] Leo Pro — macOS app *(no Terminal required)*
+
+---
+
+## Contributing
+
+Good first issues:
+- Add Fitbit CSV parser
+- Add Garmin `.fit` file support
+- Add missing Whoop metrics to schema
+- Improve test coverage
+
+See [`good first issue`](../../issues?q=is%3Aissue+label%3A%22good+first+issue%22) labels to get started.
+
+---
 
 ## License
 
-**Leo Core** — MIT licensed.
-**Leo Pro** (AI Coach + Dashboard) — commercial, coming soon.
+**Leo Core** — MIT. Free to use, modify, and distribute.
+
+**Leo Pro** (AI Coach + Dashboard) is a separate commercial product — coming soon.
 
 ---
+
 <p align="center">Built by <a href="https://github.com/sandseb123">sandseb123</a></p>
