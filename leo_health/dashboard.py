@@ -193,16 +193,21 @@ def api_sleep(days=30):
     # ── 2. Apple Health detailed stages ──────────────────────────────────────
     # Apple Health stores stage as lowercased enum suffix:
     #   asleepdeep, asleeprem, asleepcore, asleepunspecified, awake, in_bed
-    # Multiple apps/devices (e.g. Apple Watch + AutoSleep) write overlapping
-    # records for the same night → group by device and pick the best one.
+    # Two sources of inflation to guard against:
+    #   A) Multiple devices (Apple Watch + AutoSleep) writing for the same night
+    #      → group by device, pick device with most deep+REM (best stage data)
+    #   B) Same device writes both granular asleepcore segments AND a long
+    #      asleepunspecified umbrella for the whole night (Apple Watch behaviour)
+    #      → if asleepcore exists for a device/night, exclude asleepunspecified
     dur = _dur_hours("end", "start")
     raw = _q(f"""
         SELECT date(recorded_at) AS date,
                device,
-               ROUND(COALESCE(SUM(CASE WHEN stage='asleepdeep'                          THEN {dur} END),0),2) AS deep,
-               ROUND(COALESCE(SUM(CASE WHEN stage='asleeprem'                           THEN {dur} END),0),2) AS rem,
-               ROUND(COALESCE(SUM(CASE WHEN stage IN ('asleepcore','asleepunspecified') THEN {dur} END),0),2) AS light,
-               ROUND(COALESCE(SUM(CASE WHEN stage='awake'                               THEN {dur} END),0),2) AS awake,
+               ROUND(COALESCE(SUM(CASE WHEN stage='asleepdeep' THEN {dur} END),0),2) AS deep,
+               ROUND(COALESCE(SUM(CASE WHEN stage='asleeprem'  THEN {dur} END),0),2) AS rem,
+               ROUND(COALESCE(SUM(CASE WHEN stage='asleepcore' THEN {dur} END),0),2) AS core,
+               ROUND(COALESCE(SUM(CASE WHEN stage='asleepunspecified' THEN {dur} END),0),2) AS unspec,
+               ROUND(COALESCE(SUM(CASE WHEN stage='awake'      THEN {dur} END),0),2) AS awake,
                0 AS efficiency
         FROM sleep
         WHERE recorded_at>=? AND source='apple_health'
@@ -212,18 +217,27 @@ def api_sleep(days=30):
         GROUP BY date(recorded_at), device
         ORDER BY date
     """, (s,))
-    # Per night keep only the device with the most staged data (deep+REM hours).
-    # Apple Watch with stage tracking will have deep+REM > 0; third-party apps
-    # that only write light/unspecified will score lower and be dropped.
+    # Pick best device per night (most deep+REM = most accurate stage tracking).
+    # Then compute light: use asleepcore only if it exists (ignores the umbrella
+    # asleepunspecified block that Apple Watch also writes for the same night);
+    # fall back to asleepunspecified only when there is no asleepcore at all.
     by_date = {}
     for r in raw:
         d = r["date"]
         score = (r.get("deep") or 0) + (r.get("rem") or 0)
-        prev_score = (by_date[d].get("deep") or 0) + (by_date[d].get("rem") or 0) if d in by_date else -1
+        prev = by_date.get(d)
+        prev_score = (prev.get("deep") or 0) + (prev.get("rem") or 0) if prev else -1
         if score > prev_score:
             by_date[d] = r
-    rows = [r for r in sorted(by_date.values(), key=lambda x: x["date"])
-            if (r.get("deep",0) or 0)+(r.get("rem",0) or 0)+(r.get("light",0) or 0) > 0]
+    rows = []
+    for r in sorted(by_date.values(), key=lambda x: x["date"]):
+        core  = r.get("core")  or 0
+        unspec = r.get("unspec") or 0
+        light = core if core > 0 else unspec   # prefer granular core; unspec is umbrella
+        entry = dict(r)
+        entry["light"] = round(light, 2)
+        if (r.get("deep",0) or 0) + (r.get("rem",0) or 0) + light > 0:
+            rows.append(entry)
     if rows:
         return rows
 
