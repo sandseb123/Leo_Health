@@ -80,10 +80,10 @@ def api_summary():
         sleep_agg = _q1("""
             SELECT ROUND(AVG(hours),2) AS v FROM (
                 SELECT date(recorded_at) AS d,
-                       SUM(CASE WHEN stage IN ('deep','rem','core','asleep')
-                                 AND end IS NOT NULL AND start IS NOT NULL
-                           THEN (julianday(end)-julianday(start))*24 ELSE 0 END) AS hours
+                       COALESCE(SUM(CASE WHEN stage IN ('deep','rem','core','asleep')
+                           THEN (julianday(SUBSTR(end,1,19))-julianday(SUBSTR(start,1,19)))*24 END),0) AS hours
                 FROM sleep WHERE recorded_at>=? AND source='apple_health'
+                  AND end IS NOT NULL AND start IS NOT NULL AND length(end)>=19 AND length(start)>=19
                 GROUP BY d HAVING hours>0
             )
         """, (s,))
@@ -181,22 +181,29 @@ def api_sleep(days=30):
     """, (s,))
     if rows:
         return rows
-    # Fall back to Apple Health per-stage rows
+    # Fall back to Apple Health per-stage rows.
+    # julianday() cannot parse timezone offsets (e.g. -05:00), so we strip
+    # to plain YYYY-MM-DDTHH:MM:SS with SUBSTR before computing duration.
+    # Duration is still correct because start & end share the same offset.
     return _q("""
         SELECT date(recorded_at) AS date,
-               ROUND(SUM(CASE WHEN stage='deep' AND end IS NOT NULL AND start IS NOT NULL
-                   THEN (julianday(end)-julianday(start))*24 ELSE 0 END),2) AS deep,
-               ROUND(SUM(CASE WHEN stage='rem'  AND end IS NOT NULL AND start IS NOT NULL
-                   THEN (julianday(end)-julianday(start))*24 ELSE 0 END),2) AS rem,
-               ROUND(SUM(CASE WHEN stage IN ('core','asleep') AND end IS NOT NULL AND start IS NOT NULL
-                   THEN (julianday(end)-julianday(start))*24 ELSE 0 END),2) AS light,
-               ROUND(SUM(CASE WHEN stage='awake' AND end IS NOT NULL AND start IS NOT NULL
-                   THEN (julianday(end)-julianday(start))*24 ELSE 0 END),2) AS awake,
+               ROUND(COALESCE(SUM(CASE WHEN stage='deep'
+                   THEN (julianday(SUBSTR(end,1,19))-julianday(SUBSTR(start,1,19)))*24 END),0),2) AS deep,
+               ROUND(COALESCE(SUM(CASE WHEN stage='rem'
+                   THEN (julianday(SUBSTR(end,1,19))-julianday(SUBSTR(start,1,19)))*24 END),0),2) AS rem,
+               ROUND(COALESCE(SUM(CASE WHEN stage IN ('core','asleep')
+                   THEN (julianday(SUBSTR(end,1,19))-julianday(SUBSTR(start,1,19)))*24 END),0),2) AS light,
+               ROUND(COALESCE(SUM(CASE WHEN stage='awake'
+                   THEN (julianday(SUBSTR(end,1,19))-julianday(SUBSTR(start,1,19)))*24 END),0),2) AS awake,
                0 AS efficiency
         FROM sleep
         WHERE recorded_at>=? AND source='apple_health'
+          AND stage NOT IN ('in_bed')
+          AND end IS NOT NULL AND start IS NOT NULL
+          AND length(end) >= 19 AND length(start) >= 19
         GROUP BY date(recorded_at)
-        HAVING (deep+rem+light) > 0
+        HAVING COALESCE(SUM(CASE WHEN stage IN ('deep','rem','core','asleep')
+                   THEN (julianday(SUBSTR(end,1,19))-julianday(SUBSTR(start,1,19)))*24 END),0) > 0
         ORDER BY date
     """, (s,))
 
@@ -220,14 +227,18 @@ def api_recovery(days=30):
 
 def api_workouts(days=30):
     return _q("""
-        SELECT date(recorded_at) AS date, activity,
-               ROUND(AVG(duration_minutes),0) AS duration,
-               ROUND(AVG(calories),0)         AS calories,
-               ROUND(AVG(distance_km),2)      AS distance_km,
-               COUNT(*)                       AS count
-        FROM workouts WHERE recorded_at>=?
-        GROUP BY date(recorded_at), activity
-        ORDER BY date DESC LIMIT 60
+        SELECT recorded_at,
+               date(recorded_at)               AS date,
+               time(recorded_at)               AS time,
+               activity,
+               ROUND(duration_minutes, 1)      AS duration,
+               ROUND(calories, 0)              AS calories,
+               ROUND(distance_km, 2)           AS distance_km,
+               source
+        FROM workouts
+        WHERE recorded_at >= ?
+        ORDER BY recorded_at DESC
+        LIMIT 60
     """, (_since(days),))
 
 
@@ -309,17 +320,28 @@ canvas{display:block;width:100%}
 .leg-sq{width:9px;height:9px;border-radius:2px;flex-shrink:0}
 
 /* ── Workout list ────────────────────────────────────────────────────── */
-.wo-list{display:flex;flex-direction:column;gap:6px;margin-top:6px}
-.wo{display:flex;align-items:center;justify-content:space-between;
-  padding:11px 14px;background:rgba(255,255,255,0.03);border-radius:var(--r2);transition:background .15s}
-.wo:hover{background:rgba(255,255,255,0.055)}
+.wo-list{display:flex;flex-direction:column;gap:5px;margin-top:6px}
+.wo{background:rgba(255,255,255,0.03);border:1px solid transparent;
+  border-radius:var(--r2);overflow:hidden;transition:border-color .15s,background .15s;cursor:pointer}
+.wo:hover{background:rgba(255,255,255,0.055);border-color:var(--border)}
+.wo-main{display:flex;align-items:center;justify-content:space-between;padding:12px 14px}
 .wo-left{display:flex;align-items:center;gap:11px}
-.wo-icon{font-size:20px;line-height:1}
-.wo-name{font-size:13px;font-weight:500;text-transform:capitalize}
+.wo-icon{font-size:20px;line-height:1;flex-shrink:0}
+.wo-name{font-size:13px;font-weight:500}
 .wo-date{font-size:11px;color:var(--muted);margin-top:1px}
-.wo-right{text-align:right}
+.wo-right{display:flex;align-items:center;gap:12px}
 .wo-dur{font-size:13px;font-weight:600;color:var(--workout)}
-.wo-cal{font-size:11px;color:var(--muted)}
+.wo-cal{font-size:12px;color:var(--dim)}
+.wo-chev{font-size:11px;color:var(--muted);transition:transform .2s;flex-shrink:0}
+.wo.open .wo-chev{transform:rotate(90deg)}
+/* Expandable detail panel */
+.wo-detail{max-height:0;overflow:hidden;transition:max-height .22s ease}
+.wo.open .wo-detail{max-height:120px}
+.wo-detail-inner{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));
+  gap:10px 16px;padding:0 14px 14px 46px}
+.wo-stat{display:flex;flex-direction:column;gap:2px}
+.wo-stat-val{font-size:14px;font-weight:600}
+.wo-stat-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
 
 /* ── Tooltip ─────────────────────────────────────────────────────────── */
 #tt{position:fixed;background:rgba(14,14,26,.95);border:1px solid rgba(255,255,255,.12);
@@ -760,36 +782,98 @@ function drawSleep(id, data) {
   });
 }
 
-// ── Workout list ──────────────────────────────────────────────────────────────
-const WO_ICON = {
-  running:'🏃',cycling:'🚴',walking:'🚶',swimming:'🏊',
-  yoga:'🧘',hiit:'⚡',strength_training:'🏋️',
-  functional_strength_training:'🏋️',elliptical:'🔄',
-  rowing:'🚣',tennis:'🎾',basketball:'🏀',soccer:'⚽',
-  hiking:'🥾',skiing:'⛷️',snowboarding:'🏂',dance:'💃',
-  pilates:'🤸',golf:'⛳',other:'💪',
+// ── Workout helpers ───────────────────────────────────────────────────────────
+const WO_META = {
+  // key: [icon, display name]
+  running:                    ['🏃', 'Running'],
+  cycling:                    ['🚴', 'Cycling'],
+  walking:                    ['🚶', 'Walking'],
+  swimming:                   ['🏊', 'Swimming'],
+  yoga:                       ['🧘', 'Yoga'],
+  hiit:                       ['⚡', 'HIIT'],
+  strength_training:          ['🏋️', 'Strength Training'],
+  functional_strength:        ['🏋️', 'Functional Strength'],
+  // raw lowercase fallthrough names from Apple Health
+  traditionalstrengthtraining:['🏋️', 'Strength Training'],
+  functionalstrengthtraining: ['🏋️', 'Functional Strength'],
+  mindandbody:                ['🧘', 'Mind & Body'],
+  mixedcardio:                ['❤️‍🔥', 'Mixed Cardio'],
+  coretraining:               ['🤸', 'Core Training'],
+  crosstraining:              ['🔄', 'Cross Training'],
+  elliptical:                 ['🔄', 'Elliptical'],
+  rowing:                     ['🚣', 'Rowing'],
+  stairclimbing:              ['🪜', 'Stair Climbing'],
+  stairs:                     ['🪜', 'Stairs'],
+  tennis:                     ['🎾', 'Tennis'],
+  basketball:                 ['🏀', 'Basketball'],
+  soccer:                     ['⚽', 'Soccer'],
+  hiking:                     ['🥾', 'Hiking'],
+  skiing:                     ['⛷️', 'Skiing'],
+  snowboarding:               ['🏂', 'Snowboarding'],
+  dance:                      ['💃', 'Dance'],
+  pilates:                    ['🤸', 'Pilates'],
+  golf:                       ['⛳', 'Golf'],
+  barre:                      ['🩰', 'Barre'],
+  cooldown:                   ['🧊', 'Cooldown'],
+  preparationandrecovery:     ['🧊', 'Recovery'],
+  other:                      ['💪', 'Workout'],
 };
+
+function woIcon(activity)  { return (WO_META[activity] || WO_META.other)[0]; }
+function woName(activity) {
+  if (!activity) return 'Workout';
+  const meta = WO_META[activity.toLowerCase().replace(/[\s_]/g,'')];
+  if (meta) return meta[1];
+  // fallback: split on underscore/space and title-case
+  return activity.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase());
+}
+
+function toggleWo(el) {
+  el.classList.toggle('open');
+}
 
 function renderWorkouts(data) {
   const el = $('woList');
   if (!data || !data.length) { el.innerHTML='<div class="empty">No workouts in this period</div>'; return; }
-  el.innerHTML = '<div class="wo-list">' + data.slice(0,12).map(w=>{
-    const icon = WO_ICON[w.activity] || WO_ICON.other;
-    const name = (w.activity||'Workout').replace(/_/g,' ');
-    const dur  = w.duration ? Math.round(w.duration)+'m' : '';
-    const cals = w.calories ? Math.round(w.calories)+' kcal' : '';
-    const dist = w.distance_km ? (w.distance_km).toFixed(1)+' km' : '';
-    return `<div class="wo">
-      <div class="wo-left">
-        <div class="wo-icon">${icon}</div>
-        <div><div class="wo-name">${name}</div><div class="wo-date">${fmtDateLong(w.date)}</div></div>
+
+  const rows = data.slice(0, 20).map(w => {
+    const key  = (w.activity||'').toLowerCase().replace(/[\s_]/g,'');
+    const icon = woIcon(key);
+    const name = woName(w.activity);
+    const dur  = w.duration  ? Math.round(w.duration) + 'm'          : '';
+    const cals = w.calories  ? Math.round(w.calories) + ' kcal'      : '';
+    const dist = w.distance_km ? (+w.distance_km).toFixed(1) + ' km' : '';
+    const pace = (w.duration && w.distance_km && w.distance_km > 0)
+                   ? (w.duration / w.distance_km).toFixed(1) + ' min/km' : '';
+    // Build detail stats (only show what exists)
+    const stats = [
+      dur   && `<div class="wo-stat"><div class="wo-stat-val">${dur}</div><div class="wo-stat-lbl">Duration</div></div>`,
+      dist  && `<div class="wo-stat"><div class="wo-stat-val">${dist}</div><div class="wo-stat-lbl">Distance</div></div>`,
+      cals  && `<div class="wo-stat"><div class="wo-stat-val">${cals}</div><div class="wo-stat-lbl">Calories</div></div>`,
+      pace  && `<div class="wo-stat"><div class="wo-stat-val">${pace}</div><div class="wo-stat-lbl">Pace</div></div>`,
+      w.source && `<div class="wo-stat"><div class="wo-stat-val" style="font-size:11px;font-weight:400">${w.source.replace('_',' ')}</div><div class="wo-stat-lbl">Source</div></div>`,
+    ].filter(Boolean).join('');
+
+    return `<div class="wo" onclick="toggleWo(this)">
+      <div class="wo-main">
+        <div class="wo-left">
+          <div class="wo-icon">${icon}</div>
+          <div>
+            <div class="wo-name">${name}</div>
+            <div class="wo-date">${fmtDateLong(w.date)}${w.time?' · '+w.time.slice(0,5):''}</div>
+          </div>
+        </div>
+        <div class="wo-right">
+          <div class="wo-dur">${dur}</div>
+          ${dist ? `<div class="wo-cal">${dist}</div>` : (cals ? `<div class="wo-cal">${cals}</div>` : '')}
+          <span class="wo-chev">›</span>
+        </div>
       </div>
-      <div class="wo-right">
-        <div class="wo-dur">${dur}${dist?' · '+dist:''}</div>
-        <div class="wo-cal">${cals}</div>
-      </div>
+      ${stats ? `<div class="wo-detail"><div class="wo-detail-inner">${stats}</div></div>` : ''}
     </div>`;
-  }).join('') + '</div>';
+  });
+
+  el.innerHTML = '<div class="wo-list">' + rows.join('') + '</div>';
 }
 
 // ── API loaders ───────────────────────────────────────────────────────────────
