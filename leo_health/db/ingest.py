@@ -117,6 +117,33 @@ def ingest_fitbit(data: dict, db_path: str = DEFAULT_DB_PATH) -> dict:
     return counts
 
 
+# ── Garmin FIT ingest ──────────────────────────────────────────────────────────
+
+def ingest_garmin_fit(data: dict, db_path: str = DEFAULT_DB_PATH) -> dict:
+    """
+    Write parsed Garmin FIT data to the database.
+
+    Args:
+        data: Output from garmin_fit.parse() or garmin_fit.parse_folder()
+        db_path: Path to SQLite database
+
+    Returns:
+        Dict with counts of inserted rows per table
+    """
+    conn = create_schema(db_path)
+    counts = {}
+
+    try:
+        counts["heart_rate"] = _insert_many(conn, "heart_rate", data.get("heart_rate", []))
+        counts["hrv"] = _insert_many(conn, "hrv", data.get("hrv", []))
+        counts["workouts"] = _insert_many(conn, "workouts", data.get("workouts", []))
+        conn.commit()
+    finally:
+        conn.close()
+
+    return counts
+
+
 # ── Oura ingest ───────────────────────────────────────────────────────────────
 
 def ingest_oura(data: dict, db_path: str = DEFAULT_DB_PATH) -> dict:
@@ -154,6 +181,8 @@ def ingest_all(
     fitbit_zip: Optional[str] = None,
     oura_csv: Optional[str] = None,
     oura_folder: Optional[str] = None,
+    garmin_fit: Optional[str] = None,
+    garmin_fit_folder: Optional[str] = None,
     db_path: str = DEFAULT_DB_PATH,
 ) -> dict:
     """
@@ -166,11 +195,13 @@ def ingest_all(
         fitbit_zip: Path to Fitbit data export ZIP
         oura_csv: Path to a single Oura CSV file (readiness, sleep, or activity)
         oura_folder: Path to folder of Oura CSV files
+        garmin_fit: Path to a single Garmin .fit file
+        garmin_fit_folder: Path to folder of .fit files
         db_path: Path to SQLite database
 
     Returns:
         Nested dict: { 'apple_health': {...counts}, 'whoop': {...counts},
-                       'fitbit': {...counts}, 'oura': {...counts} }
+                       'fitbit': {...counts}, 'oura': {...counts}, 'garmin': {...counts} }
 
     Example:
         >>> results = ingest_all(
@@ -179,7 +210,13 @@ def ingest_all(
         ... )
         >>> print(results)
     """
-    from ..parsers import apple_health, whoop as whoop_parser, fitbit as fitbit_parser, oura as oura_parser
+    from ..parsers import (
+        apple_health,
+        whoop as whoop_parser,
+        fitbit as fitbit_parser,
+        oura as oura_parser,
+        garmin_fit as garmin_fit_parser,
+    )
 
     results = {}
 
@@ -212,6 +249,21 @@ def ingest_all(
         f_counts = ingest_fitbit(f_data, db_path)
         results["fitbit"] = f_counts
         total = sum(f_counts.values())
+        print(f"  ✓ {total:,} records ingested")
+
+    if garmin_fit_folder:
+        print(f"Parsing Garmin FIT exports from folder: {garmin_fit_folder}")
+        g_data = garmin_fit_parser.parse_folder(garmin_fit_folder)
+        g_counts = ingest_garmin_fit(g_data, db_path)
+        results["garmin"] = g_counts
+        total = sum(g_counts.values())
+        print(f"  ✓ {total:,} records ingested")
+    elif garmin_fit:
+        print(f"Parsing Garmin FIT file: {garmin_fit}")
+        g_data = garmin_fit_parser.parse(garmin_fit)
+        g_counts = ingest_garmin_fit(g_data, db_path)
+        results["garmin"] = g_counts
+        total = sum(g_counts.values())
         print(f"  ✓ {total:,} records ingested")
 
     if oura_folder:

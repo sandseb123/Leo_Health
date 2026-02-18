@@ -17,10 +17,10 @@ DEFAULT_DB_PATH = os.path.join(Path.home(), ".leo-health", "leo.db")
 # ── Schema SQL ────────────────────────────────────────────────────────────────
 
 SCHEMA = """
--- Heart rate records (Apple Health + future sources)
+-- Heart rate records (Apple Health, Garmin, etc.)
 CREATE TABLE IF NOT EXISTS heart_rate (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    source          TEXT NOT NULL,              -- 'apple_health'
+    source          TEXT NOT NULL,              -- 'apple_health', 'garmin', etc.
     metric          TEXT NOT NULL,              -- 'heart_rate', 'resting_heart_rate', etc.
     value           REAL NOT NULL,              -- BPM
     unit            TEXT DEFAULT 'count/min',
@@ -29,10 +29,10 @@ CREATE TABLE IF NOT EXISTS heart_rate (
     created_at      TEXT DEFAULT (datetime('now'))
 );
 
--- HRV records (Apple Health SDNN + Whoop HRV)
+-- HRV records (Apple Health SDNN, Whoop, Garmin RMSSD, etc.)
 CREATE TABLE IF NOT EXISTS hrv (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    source          TEXT NOT NULL,              -- 'apple_health' or 'whoop'
+    source          TEXT NOT NULL,              -- 'apple_health', 'whoop', 'garmin', etc.
     metric          TEXT NOT NULL,              -- 'hrv_sdnn'
     value           REAL NOT NULL,              -- milliseconds
     unit            TEXT DEFAULT 'ms',
