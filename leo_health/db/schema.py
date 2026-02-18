@@ -160,6 +160,40 @@ def get_connection(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     return conn
 
 
+def _migrate_sleep_dedup(conn: sqlite3.Connection) -> None:
+    """
+    One-time idempotent migration:
+      1. Delete duplicate sleep rows, keeping the earliest id per unique segment.
+      2. Create a unique index so INSERT OR IGNORE prevents future duplicates.
+
+    Root cause: without a UNIQUE constraint, every re-import of an Apple Health
+    export creates additional copies of every sleep stage record, inflating totals
+    (e.g. 3 imports × 3h core = 9h displayed light sleep).
+    """
+    conn.execute("""
+        DELETE FROM sleep
+        WHERE id NOT IN (
+            SELECT MIN(id)
+            FROM sleep
+            GROUP BY source,
+                     COALESCE(stage,   ''),
+                     COALESCE(start,   ''),
+                     COALESCE(end,     ''),
+                     COALESCE(device,  '')
+        )
+    """)
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_sleep_unique
+        ON sleep (
+            source,
+            COALESCE(stage,  ''),
+            COALESCE(start,  ''),
+            COALESCE(end,    ''),
+            COALESCE(device, '')
+        )
+    """)
+
+
 def create_schema(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     """
     Create the Leo Health database schema.
@@ -173,6 +207,7 @@ def create_schema(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     """
     conn = get_connection(db_path)
     conn.executescript(SCHEMA)
+    _migrate_sleep_dedup(conn)
     conn.commit()
     return conn
 

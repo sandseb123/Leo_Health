@@ -217,17 +217,6 @@ def api_sleep(days=30):
         GROUP BY date(recorded_at), device
         ORDER BY date
     """, (s,))
-    # ── DEBUG: write all raw sleep rows to /tmp/sleep_debug.txt ─────────────
-    with open("/tmp/sleep_debug.txt", "w") as _dbg:
-        _dbg.write(f"total rows: {len(raw)}\n")
-        for r in raw:
-            _dbg.write(
-                f"date={r['date']} device={r['device']!r:50s} "
-                f"deep={r.get('deep',0):.2f} rem={r.get('rem',0):.2f} "
-                f"core={r.get('core',0):.2f} unspec={r.get('unspec',0):.2f} "
-                f"awake={r.get('awake',0):.2f}\n"
-            )
-    # ── END DEBUG ────────────────────────────────────────────────────────────
     # Device selection priority:
     #   1. Devices whose name contains "watch" (the physical Apple Watch)
     #      — always preferred over third-party apps (AutoSleep, Sleep Cycle …)
