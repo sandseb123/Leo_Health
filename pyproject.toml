@@ -1,6 +1,7 @@
+cat > ~/leo-health/pyproject.toml << 'EOF'
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "leo-health"
@@ -8,8 +9,8 @@ version = "0.1.0"
 description = "Your Apple Health and Whoop data, as a SQL database. In 60 seconds."
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.11"
-dependencies = []  # Zero dependencies for Leo Core
+requires-python = ">=3.9"
+dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
@@ -20,3 +21,4 @@ leo = "leo_health.status:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["leo_health*"]
+EOF
