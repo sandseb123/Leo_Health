@@ -338,11 +338,11 @@ header{position:sticky;top:0;z-index:100;
 .last-sync{font-size:11px;color:var(--muted)}
 .badges{display:flex;gap:5px}
 .badge{font-size:10px;padding:2px 7px;border-radius:4px;background:rgba(255,255,255,0.06);color:var(--dim)}
-.range-bar{display:flex;background:rgba(255,255,255,0.05);border-radius:8px;padding:3px;gap:1px}
-.rbtn{background:none;border:none;color:var(--dim);padding:3px 11px;border-radius:6px;
-  font-size:12px;cursor:pointer;transition:all .15s;font-family:inherit}
-.rbtn:hover{color:var(--text)}
-.rbtn.on{background:rgba(255,255,255,0.1);color:var(--text)}
+.crange{display:flex;background:rgba(255,255,255,0.04);border-radius:7px;padding:2px;gap:1px}
+.crbtn{background:none;border:none;color:var(--muted);padding:2px 9px;border-radius:5px;
+  font-size:11px;cursor:pointer;transition:all .15s;font-family:inherit;letter-spacing:.2px}
+.crbtn:hover{color:var(--text)}
+.crbtn.on{background:rgba(255,255,255,0.1);color:var(--text);font-weight:500}
 
 /* ── Layout ─────────────────────────────────────────────────────────── */
 main{max-width:1360px;margin:0 auto;padding:28px 28px 60px}
@@ -442,12 +442,6 @@ canvas{display:block;width:100%}
   <div class="hdr-right">
     <div class="badges" id="badges"></div>
     <span class="last-sync" id="sync"></span>
-    <div class="range-bar">
-      <button class="rbtn" data-d="7">7D</button>
-      <button class="rbtn on" data-d="30">30D</button>
-      <button class="rbtn" data-d="90">90D</button>
-      <button class="rbtn" data-d="365">1Y</button>
-    </div>
   </div>
 </header>
 
@@ -459,7 +453,12 @@ canvas{display:block;width:100%}
   <div class="card">
     <div class="card-hdr">
       <div class="card-title"><div class="dot" style="background:var(--hr)"></div>Heart Rate</div>
-      <div class="card-stat"><div class="card-stat-val" id="hrVal" style="color:var(--hr)">—</div><div class="card-stat-lbl">avg bpm · 30 days</div></div>
+      <div class="crange" data-chart="hr">
+        <button class="crbtn" data-d="7">7D</button>
+        <button class="crbtn" data-d="14">14D</button>
+        <button class="crbtn on" data-d="30">30D</button>
+      </div>
+      <div class="card-stat"><div class="card-stat-val" id="hrVal" style="color:var(--hr)">—</div><div class="card-stat-lbl">avg bpm</div></div>
     </div>
     <div class="chart-wrap"><canvas id="hrC" height="128"></canvas><canvas class="overlay" id="hrO" height="128"></canvas></div>
   </div>
@@ -469,6 +468,11 @@ canvas{display:block;width:100%}
     <div class="card">
       <div class="card-hdr">
         <div class="card-title"><div class="dot" style="background:var(--hrv)"></div>HRV</div>
+        <div class="crange" data-chart="hrv">
+          <button class="crbtn" data-d="7">7D</button>
+          <button class="crbtn" data-d="14">14D</button>
+          <button class="crbtn on" data-d="30">30D</button>
+        </div>
         <div class="card-stat"><div class="card-stat-val" id="hrvVal" style="color:var(--hrv)">—</div><div class="card-stat-lbl">avg ms</div></div>
       </div>
       <div class="chart-wrap"><canvas id="hrvC" height="140"></canvas><canvas class="overlay" id="hrvO" height="140"></canvas></div>
@@ -476,6 +480,11 @@ canvas{display:block;width:100%}
     <div class="card">
       <div class="card-hdr">
         <div class="card-title"><div class="dot" style="background:#ff6b6b"></div>Resting HR</div>
+        <div class="crange" data-chart="rhr">
+          <button class="crbtn" data-d="7">7D</button>
+          <button class="crbtn" data-d="14">14D</button>
+          <button class="crbtn on" data-d="30">30D</button>
+        </div>
         <div class="card-stat"><div class="card-stat-val" id="rhrVal" style="color:#ff6b6b">—</div><div class="card-stat-lbl">avg bpm</div></div>
       </div>
       <div class="chart-wrap"><canvas id="rhrC" height="140"></canvas><canvas class="overlay" id="rhrO" height="140"></canvas></div>
@@ -486,9 +495,14 @@ canvas{display:block;width:100%}
   <div class="card">
     <div class="card-hdr">
       <div class="card-title"><div class="dot" style="background:var(--sleep-deep)"></div>Sleep</div>
+      <div class="crange" data-chart="sleep">
+        <button class="crbtn" data-d="7">7D</button>
+        <button class="crbtn" data-d="14">14D</button>
+        <button class="crbtn on" data-d="30">30D</button>
+      </div>
       <div class="card-stat"><div class="card-stat-val" id="sleepVal" style="color:var(--sleep-deep)">—</div><div class="card-stat-lbl">avg hours</div></div>
     </div>
-    <div class="chart-wrap"><canvas id="slC" height="150"></canvas></div>
+    <div class="chart-wrap"><canvas id="slC" height="150"></canvas><canvas class="overlay" id="slO" height="150"></canvas></div>
     <div class="legend">
       <div class="leg"><div class="leg-sq" style="background:var(--sleep-deep)"></div>Deep</div>
       <div class="leg"><div class="leg-sq" style="background:var(--sleep-rem)"></div>REM</div>
@@ -502,6 +516,11 @@ canvas{display:block;width:100%}
     <div class="card" id="whoopCard">
       <div class="card-hdr">
         <div class="card-title"><div class="dot" style="background:var(--rec)"></div>Whoop Recovery</div>
+        <div class="crange" data-chart="rec">
+          <button class="crbtn" data-d="7">7D</button>
+          <button class="crbtn" data-d="14">14D</button>
+          <button class="crbtn on" data-d="30">30D</button>
+        </div>
         <div class="card-stat"><div class="card-stat-val" id="whoopVal" style="color:var(--rec)">—</div><div class="card-stat-lbl">avg %</div></div>
       </div>
       <div class="chart-wrap"><canvas id="whoopC" height="140"></canvas><canvas class="overlay" id="whoopO" height="140"></canvas></div>
@@ -509,6 +528,11 @@ canvas{display:block;width:100%}
     <div class="card" id="ouraCard">
       <div class="card-hdr">
         <div class="card-title"><div class="dot" style="background:var(--read)"></div>Oura Readiness</div>
+        <div class="crange" data-chart="rec">
+          <button class="crbtn" data-d="7">7D</button>
+          <button class="crbtn" data-d="14">14D</button>
+          <button class="crbtn on" data-d="30">30D</button>
+        </div>
         <div class="card-stat"><div class="card-stat-val" id="ouraVal" style="color:var(--read)">—</div><div class="card-stat-lbl">avg score</div></div>
       </div>
       <div class="chart-wrap"><canvas id="ouraC" height="140"></canvas><canvas class="overlay" id="ouraO" height="140"></canvas></div>
@@ -519,6 +543,11 @@ canvas{display:block;width:100%}
   <div class="card">
     <div class="card-hdr">
       <div class="card-title"><div class="dot" style="background:var(--workout)"></div>Workouts</div>
+      <div class="crange" data-chart="wo">
+        <button class="crbtn" data-d="7">7D</button>
+        <button class="crbtn" data-d="14">14D</button>
+        <button class="crbtn on" data-d="30">30D</button>
+      </div>
     </div>
     <div id="woList"></div>
   </div>
@@ -539,7 +568,7 @@ const C = {
 };
 
 // ── State & utils ─────────────────────────────────────────────────────────────
-let days = 30;
+const D = {hr:30, hrv:30, rhr:30, sleep:30, rec:30, wo:30};
 const cache = {};
 const $ = id => document.getElementById(id);
 const fmt = (n, d=0) => n == null ? '—' : (+n).toFixed(d);
@@ -1141,7 +1170,7 @@ async function loadSummary() {
 }
 
 async function loadHR() {
-  const d = await get(`/api/heart-rate?days=${days}`);
+  const d = await get(`/api/heart-rate?days=${D.hr}`);
   cache.hr = d;
   if (!d||!d.length) return;
   const a = avg(d.map(r=>r.avg).filter(v=>v));
@@ -1156,7 +1185,7 @@ async function loadHR() {
 }
 
 async function loadHRV() {
-  const d = await get(`/api/hrv?days=${days}`);
+  const d = await get(`/api/hrv?days=${D.hrv}`);
   cache.hrv = d;
   if (!d||!d.length) return;
   const a = avg(d.map(r=>r.value).filter(v=>v));
@@ -1167,7 +1196,7 @@ async function loadHRV() {
 }
 
 async function loadRHR() {
-  const d = await get(`/api/resting-hr?days=${days}`);
+  const d = await get(`/api/resting-hr?days=${D.rhr}`);
   cache.rhr = d;
   if (!d||!d.length) return;
   const a = avg(d.map(r=>r.value).filter(v=>v));
@@ -1177,17 +1206,75 @@ async function loadRHR() {
   attachHover(wrap,'rhrC','rhrO', d=>({val:fmt(d.value,0)+' bpm',sub:'Resting HR'}));
 }
 
+function attachSleepHover(data) {
+  const canvas = $('slC');
+  const overlay = $('slO');
+  if (!canvas || !overlay) return;
+  const nights = data.slice(-Math.min(30, data.length));
+  const tt = $('tt'), ttDate = $('tt-date'), ttVal = $('tt-val'), ttSub = $('tt-sub');
+  const wrap = canvas.parentElement;
+  let lastIdx = -1;
+
+  function getIdx(e) {
+    const rect = canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) / rect.width * (canvas.width / (window.devicePixelRatio||1));
+    const pad = {l:36, r:10, t:10, b:26};
+    const cw = (canvas.width / (window.devicePixelRatio||1)) - pad.l - pad.r;
+    const barW = (cw - (nights.length-1)*3) / nights.length;
+    return Math.floor((mx - pad.l) / (barW + 3));
+  }
+
+  function drawHighlight(idx) {
+    const dpr = window.devicePixelRatio||1;
+    const W = overlay.offsetWidth||600, H = overlay.offsetHeight||150;
+    overlay.width = W*dpr; overlay.height = H*dpr;
+    overlay.style.width = W+'px'; overlay.style.height = H+'px';
+    const cx = overlay.getContext('2d'); cx.scale(dpr, dpr);
+    cx.clearRect(0,0,W,H);
+    if (idx < 0 || idx >= nights.length) return;
+    const pad = {l:36,r:10,t:10,b:26};
+    const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
+    const barW = (cw - (nights.length-1)*3) / nights.length;
+    const x = pad.l + idx*(barW+3);
+    cx.fillStyle = 'rgba(255,255,255,0.07)';
+    cx.fillRect(x, pad.t, barW, ch);
+  }
+
+  wrap.addEventListener('mousemove', e=>{
+    const idx = getIdx(e);
+    if (idx < 0 || idx >= nights.length) {
+      tt.style.display='none'; if(lastIdx!==idx){drawHighlight(-1);lastIdx=idx;} return;
+    }
+    if (idx !== lastIdx) { drawHighlight(idx); lastIdx = idx; }
+    const n = nights[idx];
+    const total = (n.deep||0)+(n.rem||0)+(n.light||0);
+    const h = v => v>0 ? v.toFixed(1)+'h' : '—';
+    ttDate.textContent = fmtDateLong(n.date);
+    ttVal.textContent = h(total) + ' sleep';
+    ttSub.innerHTML =
+      `<span style="color:#5e5ce6">● Deep&nbsp;&nbsp;${h(n.deep||0)}</span><br>`+
+      `<span style="color:#bf5af2">● REM&nbsp;&nbsp;&nbsp;${h(n.rem||0)}</span><br>`+
+      `<span style="color:#32ade6">● Light&nbsp;&nbsp;${h(n.light||0)}</span><br>`+
+      `<span style="color:rgba(255,149,0,.9)">● Awake&nbsp;${h(n.awake||0)}</span>`;
+    tt.style.display='block';
+    tt.style.left=(e.clientX+14)+'px';
+    tt.style.top=Math.max(10,e.clientY-100)+'px';
+  });
+  wrap.addEventListener('mouseleave', ()=>{ tt.style.display='none'; drawHighlight(-1); lastIdx=-1; });
+}
+
 async function loadSleep() {
-  const d = await get(`/api/sleep?days=${days}`);
+  const d = await get(`/api/sleep?days=${D.sleep}`);
   cache.sleep = d;
   if (!d||!d.length) { $('sleepVal').textContent='—'; return; }
   const a = avg(d.map(n=>(n.deep||0)+(n.rem||0)+(n.light||0)).filter(v=>v>0));
   const el = $('sleepVal'); if(el) countUp(el, a, 1);
   drawSleep('slC', d);
+  attachSleepHover(d);
 }
 
 async function loadRecovery() {
-  const d = await get(`/api/recovery?days=${days}`);
+  const d = await get(`/api/recovery?days=${D.rec}`);
   cache.rec = d;
 
   const hasWhoop = d && d.whoop && d.whoop.length;
@@ -1213,7 +1300,7 @@ async function loadRecovery() {
 }
 
 async function loadWorkouts() {
-  const d = await get(`/api/workouts?days=${days}`);
+  const d = await get(`/api/workouts?days=${D.wo}`);
   cache.wo = d;
   renderWorkouts(d);
 }
@@ -1222,13 +1309,23 @@ function loadAll() {
   loadHR(); loadHRV(); loadRHR(); loadSleep(); loadRecovery(); loadWorkouts();
 }
 
-// ── Range buttons ─────────────────────────────────────────────────────────────
-document.querySelectorAll('.rbtn').forEach(b=>{
-  b.addEventListener('click', ()=>{
-    document.querySelectorAll('.rbtn').forEach(x=>x.classList.remove('on'));
-    b.classList.add('on');
-    days = +b.dataset.d;
-    loadAll();
+// ── Per-card range buttons ────────────────────────────────────────────────────
+const LOADERS = {hr:loadHR, hrv:loadHRV, rhr:loadRHR, sleep:loadSleep, rec:loadRecovery, wo:loadWorkouts};
+document.querySelectorAll('.crange').forEach(group=>{
+  group.querySelectorAll('.crbtn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      // Only toggle buttons in this specific group
+      group.querySelectorAll('.crbtn').forEach(b=>b.classList.remove('on'));
+      btn.classList.add('on');
+      const chart = group.dataset.chart;
+      D[chart] = +btn.dataset.d;
+      // Sync sibling groups with same data-chart (Whoop + Oura share 'rec')
+      document.querySelectorAll(`.crange[data-chart="${chart}"]`).forEach(g=>{
+        g.querySelectorAll('.crbtn').forEach(b=>b.classList.remove('on'));
+        g.querySelector(`.crbtn[data-d="${btn.dataset.d}"]`)?.classList.add('on');
+      });
+      LOADERS[chart]?.();
+    });
   });
 });
 
