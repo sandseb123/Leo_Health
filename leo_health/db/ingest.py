@@ -89,12 +89,41 @@ def ingest_whoop(data: dict, db_path: str = DEFAULT_DB_PATH) -> dict:
     return counts
 
 
+# ── Fitbit ingest ─────────────────────────────────────────────────────────────
+
+def ingest_fitbit(data: dict, db_path: str = DEFAULT_DB_PATH) -> dict:
+    """
+    Write parsed Fitbit data to the database.
+
+    Args:
+        data: Output from fitbit.parse()
+        db_path: Path to SQLite database
+
+    Returns:
+        Dict with counts of inserted rows per table
+    """
+    conn = create_schema(db_path)
+    counts = {}
+
+    try:
+        counts["heart_rate"] = _insert_many(conn, "heart_rate", data.get("heart_rate", []))
+        counts["hrv"] = _insert_many(conn, "hrv", data.get("hrv", []))
+        counts["sleep"] = _insert_many(conn, "sleep", data.get("sleep", []))
+        counts["workouts"] = _insert_many(conn, "workouts", data.get("workouts", []))
+        conn.commit()
+    finally:
+        conn.close()
+
+    return counts
+
+
 # ── Combined ingest ───────────────────────────────────────────────────────────
 
 def ingest_all(
     apple_health_zip: Optional[str] = None,
     whoop_csv: Optional[str] = None,
     whoop_folder: Optional[str] = None,
+    fitbit_zip: Optional[str] = None,
     db_path: str = DEFAULT_DB_PATH,
 ) -> dict:
     """
@@ -104,19 +133,20 @@ def ingest_all(
         apple_health_zip: Path to Apple Health export.zip
         whoop_csv: Path to a single Whoop CSV file
         whoop_folder: Path to folder of Whoop CSV files
+        fitbit_zip: Path to Fitbit data export ZIP
         db_path: Path to SQLite database
 
     Returns:
-        Nested dict: { 'apple_health': {...counts}, 'whoop': {...counts} }
+        Nested dict: { 'apple_health': {...counts}, 'whoop': {...counts}, 'fitbit': {...counts} }
 
     Example:
         >>> results = ingest_all(
         ...     apple_health_zip="~/Downloads/export.zip",
-        ...     whoop_folder="~/Downloads/whoop/"
+        ...     fitbit_zip="~/Downloads/fitbit_export_20240115.zip",
         ... )
         >>> print(results)
     """
-    from ..parsers import apple_health, whoop as whoop_parser
+    from ..parsers import apple_health, whoop as whoop_parser, fitbit as fitbit_parser
 
     results = {}
 
@@ -141,6 +171,14 @@ def ingest_all(
         w_counts = ingest_whoop(w_data, db_path)
         results["whoop"] = w_counts
         total = sum(w_counts.values())
+        print(f"  ✓ {total:,} records ingested")
+
+    if fitbit_zip:
+        print(f"Parsing Fitbit export: {fitbit_zip}")
+        f_data = fitbit_parser.parse(fitbit_zip)
+        f_counts = ingest_fitbit(f_data, db_path)
+        results["fitbit"] = f_counts
+        total = sum(f_counts.values())
         print(f"  ✓ {total:,} records ingested")
 
     return results

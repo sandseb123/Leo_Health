@@ -59,6 +59,31 @@ def main():
     print(f"{DIM}  Size:     {db_size:.1f} MB{R}")
     print()
 
+    # ── Data sources ──────────────────────────────────────────────────────────
+    source_rows = conn.execute("""
+        SELECT source, COUNT(*) as n FROM (
+            SELECT source FROM heart_rate
+            UNION ALL SELECT source FROM hrv
+            UNION ALL SELECT source FROM sleep
+            UNION ALL SELECT source FROM workouts
+        )
+        GROUP BY source
+        ORDER BY n DESC
+    """).fetchall()
+
+    if source_rows:
+        source_icons = {
+            "apple_health": "📱 Apple Health",
+            "whoop":        "⌚ Whoop",
+            "fitbit":       "🟦 Fitbit",
+        }
+        parts = []
+        for row in source_rows:
+            label = source_icons.get(row["source"], row["source"])
+            parts.append(f"{label}  {DIM}({_format_num(row['n'])} records){R}")
+        print(f"  {BOLD}Sources{R}  " + "   ".join(parts))
+        print()
+
     # ── Heart Rate ────────────────────────────────────────────────────────────
     hr = conn.execute("""
         SELECT
