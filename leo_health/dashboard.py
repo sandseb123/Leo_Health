@@ -217,6 +217,16 @@ def api_sleep(days=30):
         GROUP BY date(recorded_at), device
         ORDER BY date
     """, (s,))
+    # ── DEBUG: print all devices + per-night stage hours to stderr ──────────
+    import sys
+    print("\n=== SLEEP DEBUG ===", file=sys.stderr)
+    for r in raw:
+        print(f"  date={r['date']} device={r['device']!r:40s} "
+              f"deep={r.get('deep',0):.1f} rem={r.get('rem',0):.1f} "
+              f"core={r.get('core',0):.1f} unspec={r.get('unspec',0):.1f} "
+              f"awake={r.get('awake',0):.1f}", file=sys.stderr)
+    print("===================\n", file=sys.stderr)
+    # ── END DEBUG ────────────────────────────────────────────────────────────
     # Device selection priority:
     #   1. Devices whose name contains "watch" (the physical Apple Watch)
     #      — always preferred over third-party apps (AutoSleep, Sleep Cycle …)
