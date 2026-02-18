@@ -196,6 +196,7 @@ def parse(zip_path: str) -> dict:
     """
     handler = _HealthHandler()
 
+    routes = []
     with zipfile.ZipFile(zip_path, "r") as zf:
         # Apple Health zip contains apple_health_export/export.xml
         xml_candidates = [n for n in zf.namelist() if n.endswith("export.xml")]
@@ -206,13 +207,12 @@ def parse(zip_path: str) -> dict:
         with zf.open(xml_path) as xml_file:
             xml.sax.parse(xml_file, handler)
 
-    # Parse GPS workout routes (workout-routes/*.gpx inside the ZIP)
-    routes = []
-    gpx_files = [n for n in zf.namelist() if n.endswith(".gpx")]
-    for gpx_path in gpx_files:
-        workout_start = _gpx_workout_start(gpx_path)
-        with zf.open(gpx_path) as gpx_file:
-            routes.extend(_parse_gpx(gpx_file.read(), workout_start))
+        # Parse GPS workout routes (workout-routes/*.gpx inside the ZIP)
+        gpx_files = [n for n in zf.namelist() if n.endswith(".gpx")]
+        for gpx_path in gpx_files:
+            workout_start = _gpx_workout_start(gpx_path)
+            with zf.open(gpx_path) as gpx_file:
+                routes.extend(_parse_gpx(gpx_file.read(), workout_start))
 
     return {
         "heart_rate": handler.heart_rate,
