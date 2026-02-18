@@ -83,6 +83,8 @@ Leo detects it within 10 seconds, parses it automatically, and sends you a macOS
 
 **For Whoop:** Open Whoop app → Profile → Export Data → check email for CSVs → AirDrop them to your Mac. Leo auto-detects and ingests them too.
 
+**For Oura:** Go to [oura.com](https://oura.com) → Account → Data Export → Download, or open the Oura app → Profile → Export. You'll get CSV files for sleep, readiness, and activity — AirDrop them to your Mac and Leo handles the rest.
+
 ---
 
 ## Auto-Ingest via AirDrop ✨
@@ -147,6 +149,13 @@ FROM workouts GROUP BY activity ORDER BY sessions DESC;
 | Strain | `whoop_strain` | Day strain, calories, max/avg HR |
 | Sleep | `sleep` | Performance %, time in bed, stages |
 
+### Oura Ring (CSV exports)
+| Data | Table | Metrics |
+|------|-------|---------|
+| Readiness | `oura_readiness` | Score, HRV balance, resting HR, temp deviation |
+| Sleep | `sleep` | REM, Deep, Light, Awake hours, efficiency % |
+| HRV | `hrv` | RMSSD in milliseconds |
+
 ---
 
 ## Privacy
@@ -176,7 +185,8 @@ Your data lives in `~/.leo-health/leo.db` and never leaves your machine.
 leo_health/
 ├── parsers/
 │   ├── apple_health.py   # SAX streaming parser for export.zip
-│   └── whoop.py          # Auto-detecting CSV parser
+│   ├── whoop.py          # Auto-detecting CSV parser
+│   └── oura.py           # Oura Ring CSV parser (readiness, sleep, activity)
 ├── db/
 │   ├── schema.py         # SQLite schema — 6 tables
 │   └── ingest.py         # Writes both sources to unified DB
@@ -198,6 +208,7 @@ pyproject.toml
 - [x] `leo` status dashboard
 - [x] `leo-watch` auto-ingest watcher
 - [x] AirDrop → auto-parse workflow
+- [x] Oura Ring CSV support
 - [ ] Fitbit CSV support
 - [ ] Garmin support
 - [ ] Leo Pro — AI Health Coach *(local LLM, 100% private)*
