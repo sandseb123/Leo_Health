@@ -217,31 +217,40 @@ def api_sleep(days=30):
         GROUP BY date(recorded_at), device
         ORDER BY date
     """, (s,))
-    # Pick best device per night (most deep+REM = most accurate stage tracking).
-    # Then compute light without the umbrella asleepunspecified inflation:
-    #   - If the device has any deep OR rem records it is doing full stage
-    #     tracking. Apple Watch also writes a long asleepunspecified block
-    #     covering the entire session as a summary — drop it entirely and use
-    #     only asleepcore for "light" (may be 0 if watch classified everything).
-    #   - If the device has NO deep and NO rem (old watch / no stage tracking)
-    #     use asleepunspecified as light (it is the only signal available).
+    # Device selection priority:
+    #   1. Devices whose name contains "watch" (the physical Apple Watch)
+    #      — always preferred over third-party apps (AutoSleep, Sleep Cycle …)
+    #      which also write deep/REM and inflate light/core records.
+    #   2. Among same device-class, pick the one with the most deep+REM hours.
+    # Light-sleep dedup:
+    #   When a device has any deep/rem/core, Apple Watch also writes a long
+    #   asleepunspecified umbrella for the whole session — exclude it and use
+    #   only asleepcore for "light". Use asleepunspecified only when there are
+    #   zero stage records (older watch with basic tracking).
     by_date = {}
     for r in raw:
         d = r["date"]
+        is_watch = "watch" in (r.get("device") or "").lower()
         score = (r.get("deep") or 0) + (r.get("rem") or 0)
         prev = by_date.get(d)
-        prev_score = (prev.get("deep") or 0) + (prev.get("rem") or 0) if prev else -1
-        if score > prev_score:
+        if prev is None:
             by_date[d] = r
+        else:
+            prev_is_watch = "watch" in (prev.get("device") or "").lower()
+            prev_score = (prev.get("deep") or 0) + (prev.get("rem") or 0)
+            # Real Apple Watch beats any third-party app unconditionally.
+            # Within the same class, higher deep+REM wins.
+            if is_watch and not prev_is_watch:
+                by_date[d] = r
+            elif is_watch == prev_is_watch and score > prev_score:
+                by_date[d] = r
     rows = []
     for r in sorted(by_date.values(), key=lambda x: x["date"]):
-        deep  = r.get("deep")  or 0
-        rem   = r.get("rem")   or 0
-        core  = r.get("core")  or 0
+        deep   = r.get("deep")  or 0
+        rem    = r.get("rem")   or 0
+        core   = r.get("core")  or 0
         unspec = r.get("unspec") or 0
         has_stage_tracking = deep > 0 or rem > 0 or core > 0
-        # When full stage tracking is present, asleepunspecified is an umbrella
-        # duplicate — exclude it. Only use it when there is nothing more specific.
         light = core if has_stage_tracking else unspec
         entry = dict(r)
         entry["light"] = round(light, 2)
