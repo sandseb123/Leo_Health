@@ -47,10 +47,11 @@ def ingest_apple_health(data: dict, db_path: str = DEFAULT_DB_PATH) -> dict:
     counts = {}
 
     try:
-        counts["heart_rate"] = _insert_many(conn, "heart_rate", data.get("heart_rate", []))
-        counts["hrv"] = _insert_many(conn, "hrv", data.get("hrv", []))
-        counts["sleep"] = _insert_many(conn, "sleep", data.get("sleep", []))
-        counts["workouts"] = _insert_many(conn, "workouts", data.get("workouts", []))
+        counts["heart_rate"]     = _insert_many(conn, "heart_rate",     data.get("heart_rate", []))
+        counts["hrv"]            = _insert_many(conn, "hrv",            data.get("hrv", []))
+        counts["sleep"]          = _insert_many(conn, "sleep",          data.get("sleep", []))
+        counts["workouts"]       = _insert_many(conn, "workouts",       data.get("workouts", []))
+        counts["workout_routes"] = _insert_many(conn, "workout_routes", data.get("routes", []))
         conn.commit()
     finally:
         conn.close()

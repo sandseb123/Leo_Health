@@ -165,15 +165,22 @@ def api_hrv(days=30):
     return sorted(by_date.values(), key=lambda x: x["date"])
 
 
+def _dur_hours(end_col, start_col):
+    """SQLite expression: hours between two ISO8601 columns (handles tz offsets)."""
+    # SUBSTR(...,1,19) strips timezone offset so julianday() can parse it.
+    return f"(julianday(SUBSTR({end_col},1,19))-julianday(SUBSTR({start_col},1,19)))*24"
+
+
 def api_sleep(days=30):
     s = _since(days)
-    # Try Whoop / Oura first (they have aggregated stage hours)
+
+    # ── 1. Whoop / Oura (have pre-computed stage hours) ──────────────────────
     rows = _q("""
         SELECT date(recorded_at) AS date,
-               ROUND(AVG(COALESCE(deep_sleep_hours,0)),2)  AS deep,
-               ROUND(AVG(COALESCE(rem_sleep_hours,0)),2)   AS rem,
-               ROUND(AVG(COALESCE(light_sleep_hours,0)),2) AS light,
-               ROUND(AVG(COALESCE(awake_hours,0)),2)       AS awake,
+               ROUND(AVG(COALESCE(deep_sleep_hours,0)),2)      AS deep,
+               ROUND(AVG(COALESCE(rem_sleep_hours,0)),2)       AS rem,
+               ROUND(AVG(COALESCE(light_sleep_hours,0)),2)     AS light,
+               ROUND(AVG(COALESCE(awake_hours,0)),2)           AS awake,
                ROUND(AVG(COALESCE(sleep_performance_pct,0)),0) AS efficiency
         FROM sleep
         WHERE recorded_at>=? AND source IN ('whoop','oura') AND stage='asleep'
@@ -181,31 +188,82 @@ def api_sleep(days=30):
     """, (s,))
     if rows:
         return rows
-    # Fall back to Apple Health per-stage rows.
-    # julianday() cannot parse timezone offsets (e.g. -05:00), so we strip
-    # to plain YYYY-MM-DDTHH:MM:SS with SUBSTR before computing duration.
-    # Duration is still correct because start & end share the same offset.
-    return _q("""
+
+    # ── 2. Apple Health detailed stages (watchOS 9+: deep/rem/core) ──────────
+    dur = _dur_hours("end", "start")
+    rows = _q(f"""
         SELECT date(recorded_at) AS date,
-               ROUND(COALESCE(SUM(CASE WHEN stage='deep'
-                   THEN (julianday(SUBSTR(end,1,19))-julianday(SUBSTR(start,1,19)))*24 END),0),2) AS deep,
-               ROUND(COALESCE(SUM(CASE WHEN stage='rem'
-                   THEN (julianday(SUBSTR(end,1,19))-julianday(SUBSTR(start,1,19)))*24 END),0),2) AS rem,
-               ROUND(COALESCE(SUM(CASE WHEN stage IN ('core','asleep')
-                   THEN (julianday(SUBSTR(end,1,19))-julianday(SUBSTR(start,1,19)))*24 END),0),2) AS light,
-               ROUND(COALESCE(SUM(CASE WHEN stage='awake'
-                   THEN (julianday(SUBSTR(end,1,19))-julianday(SUBSTR(start,1,19)))*24 END),0),2) AS awake,
+               ROUND(COALESCE(SUM(CASE WHEN stage='deep'              THEN {dur} END),0),2) AS deep,
+               ROUND(COALESCE(SUM(CASE WHEN stage='rem'               THEN {dur} END),0),2) AS rem,
+               ROUND(COALESCE(SUM(CASE WHEN stage IN ('core','asleep') THEN {dur} END),0),2) AS light,
+               ROUND(COALESCE(SUM(CASE WHEN stage='awake'             THEN {dur} END),0),2) AS awake,
                0 AS efficiency
         FROM sleep
         WHERE recorded_at>=? AND source='apple_health'
           AND stage NOT IN ('in_bed')
           AND end IS NOT NULL AND start IS NOT NULL
-          AND length(end) >= 19 AND length(start) >= 19
         GROUP BY date(recorded_at)
-        HAVING COALESCE(SUM(CASE WHEN stage IN ('deep','rem','core','asleep')
-                   THEN (julianday(SUBSTR(end,1,19))-julianday(SUBSTR(start,1,19)))*24 END),0) > 0
         ORDER BY date
     """, (s,))
+    # Filter out nights where all sleep time is 0 (bad rows)
+    rows = [r for r in rows if (r.get("deep",0) or 0)+(r.get("rem",0) or 0)+(r.get("light",0) or 0) > 0]
+    if rows:
+        return rows
+
+    # ── 3. Last resort: Apple Health 'in_bed' only (older Apple Watch) ───────
+    rows = _q(f"""
+        SELECT date(recorded_at) AS date,
+               0 AS deep, 0 AS rem,
+               ROUND(COALESCE(SUM({dur}),0),2) AS light,
+               0 AS awake, 0 AS efficiency
+        FROM sleep
+        WHERE recorded_at>=? AND source='apple_health' AND stage='in_bed'
+          AND end IS NOT NULL AND start IS NOT NULL
+        GROUP BY date(recorded_at)
+        ORDER BY date
+    """, (s,))
+    return [r for r in rows if (r.get("light") or 0) > 0]
+
+
+def api_debug_sleep():
+    """Diagnostic endpoint — call /api/debug/sleep to see raw sleep table info."""
+    try:
+        conn = _conn()
+        total  = conn.execute("SELECT COUNT(*) AS n FROM sleep").fetchone()["n"]
+        sample = [dict(r) for r in conn.execute(
+            "SELECT source, stage, start, end, recorded_at FROM sleep LIMIT 10"
+        ).fetchall()]
+        stages = [dict(r) for r in conn.execute(
+            "SELECT stage, COUNT(*) AS n FROM sleep GROUP BY stage ORDER BY n DESC"
+        ).fetchall()]
+        dates  = dict(conn.execute(
+            "SELECT MIN(date(recorded_at)) AS mn, MAX(date(recorded_at)) AS mx FROM sleep"
+        ).fetchone())
+        conn.close()
+        return {"total_rows": total, "date_range": dates,
+                "stages": stages, "sample": sample}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def api_workout_hr(start, end):
+    """Heart rate samples recorded during a workout window."""
+    return _q("""
+        SELECT recorded_at AS time, ROUND(value,0) AS value
+        FROM heart_rate
+        WHERE metric='heart_rate' AND recorded_at>=? AND recorded_at<=?
+        ORDER BY recorded_at LIMIT 500
+    """, (start, end))
+
+
+def api_workout_route(start):
+    """GPS route points for a workout (empty list if not yet imported)."""
+    return _q("""
+        SELECT latitude AS lat, longitude AS lon, altitude_m AS alt, timestamp AS time
+        FROM workout_routes
+        WHERE workout_start=?
+        ORDER BY timestamp LIMIT 5000
+    """, (start,))
 
 
 def api_recovery(days=30):
@@ -335,13 +393,21 @@ canvas{display:block;width:100%}
 .wo-chev{font-size:11px;color:var(--muted);transition:transform .2s;flex-shrink:0}
 .wo.open .wo-chev{transform:rotate(90deg)}
 /* Expandable detail panel */
-.wo-detail{max-height:0;overflow:hidden;transition:max-height .22s ease}
-.wo.open .wo-detail{max-height:120px}
-.wo-detail-inner{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));
-  gap:10px 16px;padding:0 14px 14px 46px}
+.wo-detail{max-height:0;overflow:hidden;transition:max-height .3s ease}
+.wo.open .wo-detail{max-height:400px}
+.wo-detail-inner{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));
+  gap:10px 16px;padding:0 14px 10px 46px}
 .wo-stat{display:flex;flex-direction:column;gap:2px}
 .wo-stat-val{font-size:14px;font-weight:600}
 .wo-stat-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+/* Workout HR chart + route map */
+.wo-detail-charts{display:flex;gap:12px;padding:0 14px 14px 14px;align-items:flex-start}
+.wo-hr-chart{flex:1;min-width:0}
+.wo-hr-chart canvas{display:block;width:100%;height:80px;border-radius:6px}
+.wo-hr-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px}
+.wo-route-wrap{width:130px;flex-shrink:0}
+.wo-route-wrap svg{display:block;width:130px;height:130px;border-radius:8px}
+.wo-route-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px}
 
 /* ── Tooltip ─────────────────────────────────────────────────────────── */
 #tt{position:fixed;background:rgba(14,14,26,.95);border:1px solid rgba(255,255,255,.12);
@@ -828,24 +894,160 @@ function woName(activity) {
   return activity.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase());
 }
 
-function toggleWo(el) {
+function toggleWo(el, idx) {
+  const wasOpen = el.classList.contains('open');
   el.classList.toggle('open');
+  if (!wasOpen && !el.dataset.hrLoaded) {
+    el.dataset.hrLoaded = '1';
+    loadWoDetail(el, idx);
+  }
+}
+
+// ── Workout HR mini-chart ──────────────────────────────────────────────────────
+function drawWoHR(canvasId, data) {
+  const c = $(canvasId);
+  if (!c) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.offsetWidth || c.parentElement.offsetWidth || 280;
+  const h = 80;
+  c.width = w * dpr; c.height = h * dpr;
+  const cx = c.getContext('2d');
+  cx.scale(dpr, dpr);
+
+  const vals = data.map(d => +d.value).filter(v => !isNaN(v));
+  if (vals.length < 2) return;
+  const mn = Math.min(...vals) * 0.96;
+  const mx = Math.max(...vals) * 1.04;
+  const rng = mx - mn || 1;
+  const pad = {t:8, r:8, b:18, l:34};
+  const cw = w - pad.l - pad.r, ch = h - pad.t - pad.b;
+
+  cx.clearRect(0, 0, w, h);
+
+  // Grid lines
+  cx.strokeStyle = 'rgba(255,255,255,0.05)'; cx.lineWidth = 1;
+  [0, 0.5, 1].forEach(f => {
+    const y = pad.t + ch * f;
+    cx.beginPath(); cx.moveTo(pad.l, y); cx.lineTo(w-pad.r, y); cx.stroke();
+    cx.fillStyle = 'rgba(255,255,255,0.28)'; cx.font = '9px -apple-system,sans-serif';
+    cx.textAlign = 'right'; cx.textBaseline = 'middle';
+    cx.fillText(Math.round(mx - rng*f), pad.l-4, y);
+  });
+
+  const pts = data.map((d, i) => ({
+    x: pad.l + (i / Math.max(data.length-1, 1)) * cw,
+    y: pad.t + ch - ((+d.value - mn) / rng) * ch,
+  }));
+
+  // Fill
+  const grad = cx.createLinearGradient(0, pad.t, 0, pad.t+ch);
+  grad.addColorStop(0, C.hr+'40'); grad.addColorStop(1, C.hr+'04');
+  cx.beginPath();
+  cx.moveTo(pts[0].x, pts[0].y);
+  for (let i=1; i<pts.length; i++) {
+    const cpx = (pts[i-1].x + pts[i].x) / 2;
+    cx.bezierCurveTo(cpx, pts[i-1].y, cpx, pts[i].y, pts[i].x, pts[i].y);
+  }
+  cx.lineTo(pts[pts.length-1].x, pad.t+ch);
+  cx.lineTo(pts[0].x, pad.t+ch);
+  cx.closePath();
+  cx.fillStyle = grad; cx.fill();
+
+  // Line
+  cx.beginPath();
+  cx.moveTo(pts[0].x, pts[0].y);
+  for (let i=1; i<pts.length; i++) {
+    const cpx = (pts[i-1].x + pts[i].x) / 2;
+    cx.bezierCurveTo(cpx, pts[i-1].y, cpx, pts[i].y, pts[i].x, pts[i].y);
+  }
+  cx.strokeStyle = C.hr; cx.lineWidth = 1.5; cx.lineJoin = 'round'; cx.stroke();
+
+  // Avg/max labels
+  const avgV = Math.round(vals.reduce((s,v)=>s+v,0)/vals.length);
+  const maxV = Math.round(Math.max(...vals));
+  cx.fillStyle = 'rgba(255,255,255,0.4)'; cx.font = '9px -apple-system,sans-serif';
+  cx.textAlign = 'right'; cx.textBaseline = 'alphabetic';
+  cx.fillText(`avg ${avgV} · max ${maxV} bpm`, w-pad.r, h-2);
+}
+
+// ── Workout GPS route SVG ─────────────────────────────────────────────────────
+function drawWoRoute(svgId, points) {
+  const svg = $(svgId);
+  if (!svg || !points || points.length < 2) return;
+  const lats = points.map(p => +p.lat), lons = points.map(p => +p.lon);
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  const minLon = Math.min(...lons), maxLon = Math.max(...lons);
+  const latR = maxLat - minLat || 0.001, lonR = maxLon - minLon || 0.001;
+  const W = 130, H = 130, PAD = 10;
+  const cw = W-PAD*2, ch = H-PAD*2;
+  // Keep aspect ratio
+  const scale = Math.min(cw / lonR, ch / latR);
+  const offX = (cw - lonR*scale)/2, offY = (ch - latR*scale)/2;
+  const nx = p => PAD + offX + (p.lon - minLon)*scale;
+  const ny = p => PAD + offY + (maxLat - p.lat)*scale;  // flip lat
+
+  const pts = points.map(p => `${nx(p).toFixed(1)},${ny(p).toFixed(1)}`).join(' ');
+  const s0 = points[0], se = points[points.length-1];
+  svg.innerHTML = `
+    <rect width="${W}" height="${H}" fill="rgba(255,255,255,0.03)" rx="8"/>
+    <polyline points="${pts}" fill="none" stroke="${C.hr}" stroke-width="2"
+              stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+    <circle cx="${nx(s0).toFixed(1)}" cy="${ny(s0).toFixed(1)}" r="4" fill="${C.rec}"/>
+    <circle cx="${nx(se).toFixed(1)}" cy="${ny(se).toFixed(1)}" r="4" fill="${C.hr}"/>
+  `;
+}
+
+// ── Load workout detail (HR chart + route) ────────────────────────────────────
+async function loadWoDetail(el, idx) {
+  const start    = el.dataset.start;
+  const end      = el.dataset.end || start;
+  const activity = el.dataset.activity || '';
+
+  // Compute end time: if no end stored, use start + 2h as upper bound
+  const endParam = end && end !== start ? end
+    : new Date(new Date(start).getTime() + 2*3600*1000).toISOString();
+
+  const hrData = await get(
+    `/api/workout-hr?start=${encodeURIComponent(start)}&end=${encodeURIComponent(endParam)}`
+  );
+  const hrWrap = $(`woHrWrap${idx}`);
+  if (hrData && hrData.length >= 4) {
+    drawWoHR(`woHrC${idx}`, hrData);
+  } else if (hrWrap) {
+    hrWrap.style.display = 'none';
+  }
+
+  const ROUTE_ACTS = new Set(['running','cycling','walking','hiking','skiing','snowboarding']);
+  if (ROUTE_ACTS.has(activity)) {
+    const route = await get(`/api/workout-route?start=${encodeURIComponent(start)}`);
+    const rtWrap = $(`woRtWrap${idx}`);
+    if (route && route.length >= 2) {
+      drawWoRoute(`woRtSvg${idx}`, route);
+    } else if (rtWrap) {
+      rtWrap.style.display = 'none';
+    }
+  }
 }
 
 function renderWorkouts(data) {
   const el = $('woList');
   if (!data || !data.length) { el.innerHTML='<div class="empty">No workouts in this period</div>'; return; }
 
-  const rows = data.slice(0, 20).map(w => {
+  const ROUTE_ACTS = new Set(['running','cycling','walking','hiking','skiing','snowboarding']);
+
+  const rows = data.slice(0, 20).map((w, idx) => {
     const key  = (w.activity||'').toLowerCase().replace(/[\s_]/g,'');
     const icon = woIcon(key);
     const name = woName(w.activity);
     const dur  = w.duration  ? Math.round(w.duration) + 'm'          : '';
     const cals = w.calories  ? Math.round(w.calories) + ' kcal'      : '';
-    const dist = w.distance_km ? (+w.distance_km).toFixed(1) + ' km' : '';
+    const dist = w.distance_km ? (+w.distance_km).toFixed(2) + ' km' : '';
     const pace = (w.duration && w.distance_km && w.distance_km > 0)
-                   ? (w.duration / w.distance_km).toFixed(1) + ' min/km' : '';
-    // Build detail stats (only show what exists)
+                   ? Math.floor(w.duration / w.distance_km) + ':' +
+                     String(Math.round((w.duration / w.distance_km % 1) * 60)).padStart(2,'0') + ' /km'
+                   : '';
+    const canRoute = ROUTE_ACTS.has(key);
+
     const stats = [
       dur   && `<div class="wo-stat"><div class="wo-stat-val">${dur}</div><div class="wo-stat-lbl">Duration</div></div>`,
       dist  && `<div class="wo-stat"><div class="wo-stat-val">${dist}</div><div class="wo-stat-lbl">Distance</div></div>`,
@@ -854,7 +1056,11 @@ function renderWorkouts(data) {
       w.source && `<div class="wo-stat"><div class="wo-stat-val" style="font-size:11px;font-weight:400">${w.source.replace('_',' ')}</div><div class="wo-stat-lbl">Source</div></div>`,
     ].filter(Boolean).join('');
 
-    return `<div class="wo" onclick="toggleWo(this)">
+    const safeStart = encodeURIComponent(w.recorded_at||'');
+    const safeEnd   = encodeURIComponent(w.end||w.recorded_at||'');
+
+    return `<div class="wo" onclick="toggleWo(this,${idx})"
+        data-start="${w.recorded_at||''}" data-end="${w.end||''}" data-activity="${key}" data-idx="${idx}">
       <div class="wo-main">
         <div class="wo-left">
           <div class="wo-icon">${icon}</div>
@@ -869,7 +1075,19 @@ function renderWorkouts(data) {
           <span class="wo-chev">›</span>
         </div>
       </div>
-      ${stats ? `<div class="wo-detail"><div class="wo-detail-inner">${stats}</div></div>` : ''}
+      <div class="wo-detail">
+        ${stats ? `<div class="wo-detail-inner">${stats}</div>` : ''}
+        <div class="wo-detail-charts">
+          <div class="wo-hr-chart" id="woHrWrap${idx}">
+            <div class="wo-hr-lbl">Heart Rate During Workout</div>
+            <canvas id="woHrC${idx}" height="80"></canvas>
+          </div>
+          ${canRoute ? `<div class="wo-route-wrap" id="woRtWrap${idx}">
+            <div class="wo-route-lbl">Route</div>
+            <svg id="woRtSvg${idx}" viewBox="0 0 130 130"></svg>
+          </div>` : ''}
+        </div>
+      </div>
     </div>`;
   });
 
@@ -1060,14 +1278,19 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         p = urllib.parse.urlparse(self.path)
         qs = urllib.parse.parse_qs(p.query)
         d  = int(qs.get("days", ["30"])[0])
+        start = qs.get("start", [""])[0]
+        end   = qs.get("end",   [""])[0]
         routes = {
-            "/api/summary":    lambda: api_summary(),
-            "/api/heart-rate": lambda: api_heart_rate(d),
-            "/api/resting-hr": lambda: api_resting_hr(d),
-            "/api/hrv":        lambda: api_hrv(d),
-            "/api/sleep":      lambda: api_sleep(d),
-            "/api/recovery":   lambda: api_recovery(d),
-            "/api/workouts":   lambda: api_workouts(d),
+            "/api/summary":      lambda: api_summary(),
+            "/api/heart-rate":   lambda: api_heart_rate(d),
+            "/api/resting-hr":   lambda: api_resting_hr(d),
+            "/api/hrv":          lambda: api_hrv(d),
+            "/api/sleep":        lambda: api_sleep(d),
+            "/api/recovery":     lambda: api_recovery(d),
+            "/api/workouts":     lambda: api_workouts(d),
+            "/api/debug/sleep":  lambda: api_debug_sleep(),
+            "/api/workout-hr":   lambda: api_workout_hr(start, end),
+            "/api/workout-route":lambda: api_workout_route(start),
         }
         if p.path in routes:
             self._json(routes[p.path]())

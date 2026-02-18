@@ -115,6 +115,17 @@ CREATE TABLE IF NOT EXISTS oura_readiness (
     created_at              TEXT DEFAULT (datetime('now'))
 );
 
+-- GPS route points extracted from Apple Health workout-routes/*.gpx files
+CREATE TABLE IF NOT EXISTS workout_routes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    workout_start   TEXT NOT NULL,  -- matches workouts.recorded_at (for joining)
+    timestamp       TEXT NOT NULL,  -- GPS fix time (ISO8601)
+    latitude        REAL NOT NULL,
+    longitude       REAL NOT NULL,
+    altitude_m      REAL,
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+
 -- Indexes for common query patterns
 CREATE INDEX IF NOT EXISTS idx_heart_rate_recorded_at ON heart_rate(recorded_at);
 CREATE INDEX IF NOT EXISTS idx_hrv_recorded_at ON hrv(recorded_at);
@@ -125,6 +136,7 @@ CREATE INDEX IF NOT EXISTS idx_whoop_strain_recorded_at ON whoop_strain(recorded
 CREATE INDEX IF NOT EXISTS idx_oura_readiness_recorded_at ON oura_readiness(recorded_at);
 CREATE INDEX IF NOT EXISTS idx_heart_rate_source ON heart_rate(source);
 CREATE INDEX IF NOT EXISTS idx_hrv_source ON hrv(source);
+CREATE INDEX IF NOT EXISTS idx_workout_routes_start ON workout_routes(workout_start);
 """
 
 
