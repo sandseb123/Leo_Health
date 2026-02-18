@@ -80,7 +80,7 @@ def api_summary():
         sleep_agg = _q1("""
             SELECT ROUND(AVG(hours),2) AS v FROM (
                 SELECT date(recorded_at) AS d,
-                       COALESCE(SUM(CASE WHEN stage IN ('deep','rem','core','asleep')
+                       COALESCE(SUM(CASE WHEN stage IN ('asleepdeep','asleeprem','asleepcore','asleepunspecified')
                            THEN (julianday(SUBSTR(end,1,19))-julianday(SUBSTR(start,1,19)))*24 END),0) AS hours
                 FROM sleep WHERE recorded_at>=? AND source='apple_health'
                   AND end IS NOT NULL AND start IS NOT NULL AND length(end)>=19 AND length(start)>=19
@@ -189,14 +189,16 @@ def api_sleep(days=30):
     if rows:
         return rows
 
-    # ── 2. Apple Health detailed stages (watchOS 9+: deep/rem/core) ──────────
+    # ── 2. Apple Health detailed stages ──────────────────────────────────────
+    # Apple Health stores stage as lowercased enum suffix:
+    #   asleepdeep, asleeprem, asleepcore, asleepunspecified, awake, in_bed
     dur = _dur_hours("end", "start")
     rows = _q(f"""
         SELECT date(recorded_at) AS date,
-               ROUND(COALESCE(SUM(CASE WHEN stage='deep'              THEN {dur} END),0),2) AS deep,
-               ROUND(COALESCE(SUM(CASE WHEN stage='rem'               THEN {dur} END),0),2) AS rem,
-               ROUND(COALESCE(SUM(CASE WHEN stage IN ('core','asleep') THEN {dur} END),0),2) AS light,
-               ROUND(COALESCE(SUM(CASE WHEN stage='awake'             THEN {dur} END),0),2) AS awake,
+               ROUND(COALESCE(SUM(CASE WHEN stage='asleepdeep'                          THEN {dur} END),0),2) AS deep,
+               ROUND(COALESCE(SUM(CASE WHEN stage='asleeprem'                           THEN {dur} END),0),2) AS rem,
+               ROUND(COALESCE(SUM(CASE WHEN stage IN ('asleepcore','asleepunspecified') THEN {dur} END),0),2) AS light,
+               ROUND(COALESCE(SUM(CASE WHEN stage='awake'                               THEN {dur} END),0),2) AS awake,
                0 AS efficiency
         FROM sleep
         WHERE recorded_at>=? AND source='apple_health'
