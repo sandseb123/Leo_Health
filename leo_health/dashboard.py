@@ -316,7 +316,7 @@ HTML = r"""<!DOCTYPE html>
   --border:rgba(255,255,255,0.07);--border2:rgba(255,255,255,0.12);
   --text:#f0f0f8;--dim:rgba(240,240,248,0.55);--muted:rgba(240,240,248,0.3);
   --hr:#ff375f;--hrv:#bf5af2;
-  --sleep-deep:#0a84ff;--sleep-rem:#5ac8fa;--sleep-light:#64d2ff;--sleep-awake:rgba(255,255,255,0.13);
+  --sleep-deep:#5e5ce6;--sleep-rem:#bf5af2;--sleep-light:#32ade6;--sleep-awake:rgba(255,149,0,0.45);
   --rec:#30d158;--read:#ffd60a;--strain:#ff9f0a;--workout:#ff9f0a;
   --r:16px;--r2:10px;
 }
@@ -492,8 +492,8 @@ canvas{display:block;width:100%}
     <div class="legend">
       <div class="leg"><div class="leg-sq" style="background:var(--sleep-deep)"></div>Deep</div>
       <div class="leg"><div class="leg-sq" style="background:var(--sleep-rem)"></div>REM</div>
-      <div class="leg"><div class="leg-sq" style="background:var(--sleep-light);opacity:.6"></div>Light / Core</div>
-      <div class="leg"><div class="leg-sq" style="background:rgba(255,255,255,.15)"></div>Awake</div>
+      <div class="leg"><div class="leg-sq" style="background:var(--sleep-light)"></div>Light / Core</div>
+      <div class="leg"><div class="leg-sq" style="background:var(--sleep-awake)"></div>Awake</div>
     </div>
   </div>
 
@@ -827,10 +827,10 @@ function drawSleep(id, data) {
     let top = pad.t + ch;
 
     [
-      {val:n.awake||0,  col:'rgba(255,255,255,0.12)'},
-      {val:n.light||0,  col:'rgba(100,210,255,0.42)'},
-      {val:n.rem||0,    col:'#5ac8fa'},
-      {val:n.deep||0,   col:'#0a84ff'},
+      {val:n.awake||0,  col:'rgba(255,149,0,0.45)'},
+      {val:n.light||0,  col:'#32ade6'},
+      {val:n.rem||0,    col:'#bf5af2'},
+      {val:n.deep||0,   col:'#5e5ce6'},
     ].forEach(({val,col})=>{
       if (!val) return;
       const bh = yScale(val);
