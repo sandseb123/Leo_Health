@@ -17,10 +17,10 @@ DEFAULT_DB_PATH = os.path.join(Path.home(), ".leo-health", "leo.db")
 # ── Schema SQL ────────────────────────────────────────────────────────────────
 
 SCHEMA = """
--- Heart rate records (Apple Health + future sources)
+-- Heart rate records (Apple Health, Garmin, etc.)
 CREATE TABLE IF NOT EXISTS heart_rate (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    source          TEXT NOT NULL,              -- 'apple_health'
+    source          TEXT NOT NULL,              -- 'apple_health', 'garmin', etc.
     metric          TEXT NOT NULL,              -- 'heart_rate', 'resting_heart_rate', etc.
     value           REAL NOT NULL,              -- BPM
     unit            TEXT DEFAULT 'count/min',
@@ -29,10 +29,10 @@ CREATE TABLE IF NOT EXISTS heart_rate (
     created_at      TEXT DEFAULT (datetime('now'))
 );
 
--- HRV records (Apple Health SDNN + Whoop HRV)
+-- HRV records (Apple Health SDNN, Whoop, Garmin RMSSD, etc.)
 CREATE TABLE IF NOT EXISTS hrv (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    source          TEXT NOT NULL,              -- 'apple_health' or 'whoop'
+    source          TEXT NOT NULL,              -- 'apple_health', 'whoop', 'garmin', etc.
     metric          TEXT NOT NULL,              -- 'hrv_sdnn'
     value           REAL NOT NULL,              -- milliseconds
     unit            TEXT DEFAULT 'ms',
@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS sleep (
     device          TEXT,
     -- Whoop-specific aggregates (NULL for Apple Health rows)
     sleep_performance_pct   REAL,
+    sleep_consistency_score REAL,
     time_in_bed_hours       REAL,
     light_sleep_hours       REAL,
     rem_sleep_hours         REAL,
@@ -85,6 +86,8 @@ CREATE TABLE IF NOT EXISTS whoop_recovery (
     resting_heart_rate REAL,
     spo2_pct        REAL,
     skin_temp_celsius REAL,
+    respiratory_rate REAL,
+    blood_oxygen_trend TEXT,
     created_at      TEXT DEFAULT (datetime('now'))
 );
 
@@ -161,8 +164,41 @@ def create_schema(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     """
     conn = get_connection(db_path)
     conn.executescript(SCHEMA)
+    _apply_migrations(conn)
     conn.commit()
     return conn
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    """
+    Lightweight migrations for existing DBs.
+    SQLite can't add columns via CREATE TABLE IF NOT EXISTS, so we ALTER as needed.
+    """
+    def _cols(table: str) -> set[str]:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return {r[1] for r in rows}  # (cid, name, type, notnull, dflt_value, pk)
+
+    def _add_col(table: str, col: str, col_type: str) -> None:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+
+    # Whoop recovery additions
+    try:
+        existing = _cols("whoop_recovery")
+        if "respiratory_rate" not in existing:
+            _add_col("whoop_recovery", "respiratory_rate", "REAL")
+        if "blood_oxygen_trend" not in existing:
+            _add_col("whoop_recovery", "blood_oxygen_trend", "TEXT")
+    except sqlite3.OperationalError:
+        # Table doesn't exist yet (fresh DB); SCHEMA handles it.
+        pass
+
+    # Sleep aggregate additions
+    try:
+        existing = _cols("sleep")
+        if "sleep_consistency_score" not in existing:
+            _add_col("sleep", "sleep_consistency_score", "REAL")
+    except sqlite3.OperationalError:
+        pass
 
 
 def get_stats(db_path: str = DEFAULT_DB_PATH) -> dict:

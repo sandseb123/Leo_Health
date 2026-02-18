@@ -18,8 +18,14 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 
-from .db.ingest import ingest_apple_health, ingest_whoop, ingest_fitbit, ingest_oura
-from .parsers import apple_health, whoop as whoop_parser, fitbit as fitbit_parser, oura as oura_parser
+from .db.ingest import ingest_apple_health, ingest_whoop, ingest_fitbit, ingest_oura, ingest_garmin_fit
+from .parsers import (
+    apple_health,
+    whoop as whoop_parser,
+    fitbit as fitbit_parser,
+    oura as oura_parser,
+    garmin_fit as garmin_fit_parser,
+)
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -115,6 +121,11 @@ def _is_oura_export(filepath: Path) -> bool:
     )
 
 
+def _is_garmin_fit_export(filepath: Path) -> bool:
+    """Check if a file is a Garmin FIT export."""
+    return filepath.suffix.lower() == ".fit"
+
+
 def _is_file_ready(filepath: Path) -> bool:
     """
     Check if a file has finished copying (AirDrop files arrive mid-write).
@@ -204,6 +215,25 @@ def _process_fitbit(filepath: Path) -> dict:
     return counts
 
 
+def _process_garmin_fit(filepath: Path) -> dict:
+    """Parse and ingest a Garmin .fit file."""
+    print(f"  ⌚ Detected Garmin FIT export: {filepath.name}")
+    _notify("Leo Health", f"Parsing {filepath.name}...")
+
+    data = garmin_fit_parser.parse(str(filepath))
+    counts = ingest_garmin_fit(data)
+    total = sum(counts.values())
+
+    summary = (
+        f"✓ {counts.get('heart_rate', 0):,} heart rate  "
+        f"· {counts.get('hrv', 0):,} HRV  "
+        f"· {counts.get('workouts', 0):,} workouts"
+    )
+    print(f"  {summary}")
+    _notify("Leo Health ✓", f"Garmin FIT ingested — {total:,} records added")
+    return counts
+
+
 # ── Scanner ───────────────────────────────────────────────────────────────────
 
 def scan_once(watch_folder: Path, processed: set) -> set:
@@ -224,8 +254,9 @@ def scan_once(watch_folder: Path, processed: set) -> set:
         is_whoop = _is_whoop_export(entry)
         is_fitbit = _is_fitbit_export(entry)
         is_oura = _is_oura_export(entry)
+        is_garmin_fit = _is_garmin_fit_export(entry)
 
-        if not (is_apple or is_whoop or is_fitbit or is_oura):
+        if not (is_apple or is_whoop or is_fitbit or is_oura or is_garmin_fit):
             continue
 
         # Wait for file to finish copying
@@ -254,6 +285,8 @@ def scan_once(watch_folder: Path, processed: set) -> set:
                 _process_fitbit(entry)
             elif is_oura:
                 _process_oura(entry)
+            elif is_garmin_fit:
+                _process_garmin_fit(entry)
 
             _mark_processed(fhash)
             processed.add(fhash)
@@ -281,9 +314,9 @@ def watch(folder: Path = WATCH_FOLDER):
   Watching: {folder}
   Database: ~/.leo-health/leo.db
   
-  AirDrop your Apple Health export.zip
-  or Whoop CSVs to this folder and Leo
-  will automatically parse them.
+  AirDrop Apple Health export.zip, Whoop CSVs,
+  Fitbit ZIP, Oura CSVs, or Garmin .fit files
+  to this folder and Leo will auto-ingest them.
 
   Press Ctrl+C to stop.
 """)

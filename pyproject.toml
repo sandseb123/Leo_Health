@@ -10,7 +10,9 @@ description = "Your Apple Health and Whoop data, as a SQL database. In 60 second
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
-dependencies = []
+dependencies = [
+    "fitparse>=1.2.0",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
