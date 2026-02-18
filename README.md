@@ -49,6 +49,31 @@ SELECT stage, COUNT(*) as sessions FROM sleep GROUP BY stage;
 
 **Whoop:** Whoop app → Profile → Export Data → check email for CSVs
 
+## Auto-Ingest via AirDrop ✨
+
+Leo watches your Downloads folder and automatically parses any health export 
+the moment it arrives — no commands needed.
+
+**Start the watcher:**
+```bash
+python3 -m leo_health.watcher
+```
+
+**Then on your iPhone:**
+1. Open Health app → profile picture → Export All Health Data
+2. AirDrop it to your Mac
+3. Leo detects it within 10 seconds, parses it, and sends you a notification
+
+That's it. Your database is updated automatically every time you export.
+
+**Run Leo automatically on every login:**
+```bash
+cp com.leohealth.watcher.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.leohealth.watcher.plist
+```
+
+Leo uses ~8MB RAM and near-zero CPU while watching. You won't notice it's running.
+
 ## Privacy
 
 Zero network code. Verify it yourself:
