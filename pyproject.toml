@@ -1,4 +1,3 @@
-cat > ~/leo-health/pyproject.toml << 'EOF'
 [build-system]
 requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
@@ -16,9 +15,10 @@ dependencies = []
 dev = ["pytest>=7.0"]
 
 [project.scripts]
-leo = "leo_health.status:main"
+leo       = "leo_health.status:main"
+leo-watch = "leo_health.watcher:main"
+leo-dash  = "leo_health.dashboard:main"
 
 [tool.setuptools.packages.find]
-where = ["."]
+where   = ["."]
 include = ["leo_health*"]
-EOF

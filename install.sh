@@ -45,10 +45,12 @@ if [ "$SHELL_NAME" = "fish" ]; then
   echo "set -x PYTHONPATH \"$INSTALL_DIR\" \$PYTHONPATH" >> "$SHELL_CONFIG"
   echo "alias leo=\"python3 -m leo_health.status\"" >> "$SHELL_CONFIG"
   echo "alias leo-watch=\"python3 -m leo_health.watcher\"" >> "$SHELL_CONFIG"
+  echo "alias leo-dash=\"python3 -m leo_health.dashboard\"" >> "$SHELL_CONFIG"
 else
   echo "export PYTHONPATH=\"$INSTALL_DIR:\$PYTHONPATH\"" >> "$SHELL_CONFIG"
   echo "alias leo=\"python3 -m leo_health.status\"" >> "$SHELL_CONFIG"
   echo "alias leo-watch=\"python3 -m leo_health.watcher\"" >> "$SHELL_CONFIG"
+  echo "alias leo-dash=\"python3 -m leo_health.dashboard\"" >> "$SHELL_CONFIG"
 fi
 
 # Source the config (fish handles this differently)
@@ -57,13 +59,14 @@ if [ "$SHELL_NAME" != "fish" ]; then
   source "$SHELL_CONFIG" 2>/dev/null || true
 fi
 
-echo "✓ Installed! Two commands now available:"
+echo "✓ Installed! Commands now available:"
 echo ""
-echo "  leo          → view your health dashboard"
-echo "  leo-watch    → start watching Downloads for exports"
+echo "  leo          → print health stats in the terminal"
+echo "  leo-watch    → watch Downloads folder for new exports"
+echo "  leo-dash     → open the web dashboard in your browser"
 echo ""
 if [ "$SHELL_NAME" = "fish" ]; then
   echo "Restart your terminal or run: source $SHELL_CONFIG"
 else
-  echo "AirDrop your Apple Health export.zip to get started."
+  echo "AirDrop your Apple Health export.zip, then run: leo-watch"
 fi
