@@ -27,12 +27,15 @@ from .parsers import apple_health, whoop as whoop_parser
 WATCH_FOLDER = Path.home() / "Downloads"
 PROCESSED_LOG = Path.home() / ".leo-health" / "processed.txt"
 CHECK_INTERVAL = 10  # seconds between scans
+SILENT = True  # set to False to enable macOS notifications
 
 
 # ── Notification ──────────────────────────────────────────────────────────────
 
 def _notify(title: str, message: str):
-    """Send a macOS notification. Falls back silently if not on macOS."""
+    """Send a macOS notification. Set SILENT=True above to disable."""
+    if SILENT:
+        return
     try:
         script = f'display notification "{message}" with title "{title}" sound name "Glass"'
         subprocess.run(["osascript", "-e", script], check=False, capture_output=True)
