@@ -192,9 +192,12 @@ def api_sleep(days=30):
     # ── 2. Apple Health detailed stages ──────────────────────────────────────
     # Apple Health stores stage as lowercased enum suffix:
     #   asleepdeep, asleeprem, asleepcore, asleepunspecified, awake, in_bed
+    # Multiple apps/devices (e.g. Apple Watch + AutoSleep) write overlapping
+    # records for the same night → group by device and pick the best one.
     dur = _dur_hours("end", "start")
-    rows = _q(f"""
+    raw = _q(f"""
         SELECT date(recorded_at) AS date,
+               device,
                ROUND(COALESCE(SUM(CASE WHEN stage='asleepdeep'                          THEN {dur} END),0),2) AS deep,
                ROUND(COALESCE(SUM(CASE WHEN stage='asleeprem'                           THEN {dur} END),0),2) AS rem,
                ROUND(COALESCE(SUM(CASE WHEN stage IN ('asleepcore','asleepunspecified') THEN {dur} END),0),2) AS light,
@@ -202,13 +205,24 @@ def api_sleep(days=30):
                0 AS efficiency
         FROM sleep
         WHERE recorded_at>=? AND source='apple_health'
-          AND stage NOT IN ('in_bed')
+          AND stage IN ('asleepdeep','asleeprem','asleepcore','asleepunspecified','awake')
           AND end IS NOT NULL AND start IS NOT NULL
-        GROUP BY date(recorded_at)
+          AND length(end)>=19 AND length(start)>=19
+        GROUP BY date(recorded_at), device
         ORDER BY date
     """, (s,))
-    # Filter out nights where all sleep time is 0 (bad rows)
-    rows = [r for r in rows if (r.get("deep",0) or 0)+(r.get("rem",0) or 0)+(r.get("light",0) or 0) > 0]
+    # Per night keep only the device with the most staged data (deep+REM hours).
+    # Apple Watch with stage tracking will have deep+REM > 0; third-party apps
+    # that only write light/unspecified will score lower and be dropped.
+    by_date = {}
+    for r in raw:
+        d = r["date"]
+        score = (r.get("deep") or 0) + (r.get("rem") or 0)
+        prev_score = (by_date[d].get("deep") or 0) + (by_date[d].get("rem") or 0) if d in by_date else -1
+        if score > prev_score:
+            by_date[d] = r
+    rows = [r for r in sorted(by_date.values(), key=lambda x: x["date"])
+            if (r.get("deep",0) or 0)+(r.get("rem",0) or 0)+(r.get("light",0) or 0) > 0]
     if rows:
         return rows
 
@@ -864,6 +878,7 @@ function drawSleep(id, data) {
       if (!val) return;
       const bh = yScale(val);
       top -= bh;
+      cx.beginPath();
       cx.fillStyle = col;
       if (cx.roundRect) cx.roundRect(x, top, barW, bh, 2.5);
       else cx.rect(x, top, barW, bh);
