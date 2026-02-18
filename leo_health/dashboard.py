@@ -196,9 +196,9 @@ def api_sleep(days=30):
     # Two sources of inflation to guard against:
     #   A) Multiple devices (Apple Watch + AutoSleep) writing for the same night
     #      → group by device, pick device with most deep+REM (best stage data)
-    #   B) Same device writes both granular asleepcore segments AND a long
+    #   B) Same device writes both granular stage segments AND a long
     #      asleepunspecified umbrella for the whole night (Apple Watch behaviour)
-    #      → if asleepcore exists for a device/night, exclude asleepunspecified
+    #      → if device has any deep/rem/core, drop asleepunspecified entirely
     dur = _dur_hours("end", "start")
     raw = _q(f"""
         SELECT date(recorded_at) AS date,
@@ -218,9 +218,13 @@ def api_sleep(days=30):
         ORDER BY date
     """, (s,))
     # Pick best device per night (most deep+REM = most accurate stage tracking).
-    # Then compute light: use asleepcore only if it exists (ignores the umbrella
-    # asleepunspecified block that Apple Watch also writes for the same night);
-    # fall back to asleepunspecified only when there is no asleepcore at all.
+    # Then compute light without the umbrella asleepunspecified inflation:
+    #   - If the device has any deep OR rem records it is doing full stage
+    #     tracking. Apple Watch also writes a long asleepunspecified block
+    #     covering the entire session as a summary — drop it entirely and use
+    #     only asleepcore for "light" (may be 0 if watch classified everything).
+    #   - If the device has NO deep and NO rem (old watch / no stage tracking)
+    #     use asleepunspecified as light (it is the only signal available).
     by_date = {}
     for r in raw:
         d = r["date"]
@@ -231,12 +235,17 @@ def api_sleep(days=30):
             by_date[d] = r
     rows = []
     for r in sorted(by_date.values(), key=lambda x: x["date"]):
+        deep  = r.get("deep")  or 0
+        rem   = r.get("rem")   or 0
         core  = r.get("core")  or 0
         unspec = r.get("unspec") or 0
-        light = core if core > 0 else unspec   # prefer granular core; unspec is umbrella
+        has_stage_tracking = deep > 0 or rem > 0 or core > 0
+        # When full stage tracking is present, asleepunspecified is an umbrella
+        # duplicate — exclude it. Only use it when there is nothing more specific.
+        light = core if has_stage_tracking else unspec
         entry = dict(r)
         entry["light"] = round(light, 2)
-        if (r.get("deep",0) or 0) + (r.get("rem",0) or 0) + light > 0:
+        if deep + rem + light > 0:
             rows.append(entry)
     if rows:
         return rows
