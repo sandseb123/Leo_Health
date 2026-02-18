@@ -437,6 +437,17 @@ canvas{display:block;width:100%}
 <div id="tt"><div id="tt-date"></div><div id="tt-val"></div><div id="tt-sub"></div></div>
 
 <script>
+// ── Colors (hex literals — CSS vars don't work in Canvas API) ─────────────────
+const C = {
+  hr:    '#ff375f',
+  hrv:   '#bf5af2',
+  rhr:   '#ff6b6b',
+  sleep: '#0a84ff',
+  rec:   '#30d158',
+  read:  '#ffd60a',
+  strain:'#ff9f0a',
+};
+
 // ── State & utils ─────────────────────────────────────────────────────────────
 let days = 30;
 const cache = {};
@@ -831,7 +842,7 @@ async function loadHR() {
   if (!d||!d.length) return;
   const a = avg(d.map(r=>r.avg).filter(v=>v));
   const el = $('hrVal'); if(el) countUp(el, a, 0);
-  drawLine('hrC','hrO', d, {color:'var(--hr)',valueKey:'avg',unit:'bpm'});
+  drawLine('hrC','hrO', d, {color:C.hr, valueKey:'avg', unit:'bpm'});
 
   const wrap = $('hrC').parentElement;
   attachHover(wrap, 'hrC', 'hrO', d=>{
@@ -846,7 +857,7 @@ async function loadHRV() {
   if (!d||!d.length) return;
   const a = avg(d.map(r=>r.value).filter(v=>v));
   const el = $('hrvVal'); if(el) countUp(el, a, 0);
-  drawLine('hrvC','hrvO', d, {color:'var(--hrv)',unit:'ms',minY:0});
+  drawLine('hrvC','hrvO', d, {color:C.hrv, unit:'ms', minY:0});
   const wrap = $('hrvC').parentElement;
   attachHover(wrap,'hrvC','hrvO', d=>({val:fmt(d.value,1)+' ms', sub:d.source||''}));
 }
@@ -884,14 +895,14 @@ async function loadRecovery() {
   if (hasWhoop) {
     const a = avg(d.whoop.map(r=>r.value).filter(v=>v));
     const el=$('whoopVal'); if(el) countUp(el,a,0);
-    drawLine('whoopC','whoopO', d.whoop, {color:'var(--rec)',unit:'%',minY:0,maxY:100});
+    drawLine('whoopC','whoopO', d.whoop, {color:C.rec, unit:'%', minY:0, maxY:100});
     const wrap=$('whoopC').parentElement;
     attachHover(wrap,'whoopC','whoopO', r=>({val:fmt(r.value,0)+'%',sub:'Recovery'}));
   }
   if (hasOura) {
     const a = avg(d.oura.map(r=>r.value).filter(v=>v));
     const el=$('ouraVal'); if(el) countUp(el,a,0);
-    drawLine('ouraC','ouraO', d.oura, {color:'var(--read)',unit:'',minY:0,maxY:100});
+    drawLine('ouraC','ouraO', d.oura, {color:C.read, unit:'', minY:0, maxY:100});
     const wrap=$('ouraC').parentElement;
     attachHover(wrap,'ouraC','ouraO', r=>({val:fmt(r.value,0),sub:'Readiness'}));
   }
@@ -921,13 +932,13 @@ document.querySelectorAll('.rbtn').forEach(b=>{
 window.addEventListener('resize', ()=>{
   clearTimeout(window._rsz);
   window._rsz = setTimeout(()=>{
-    if(cache.hr)     drawLine('hrC','hrO',    cache.hr,  {color:'var(--hr)',valueKey:'avg',unit:'bpm'});
-    if(cache.hrv)    drawLine('hrvC','hrvO',  cache.hrv, {color:'var(--hrv)',unit:'ms',minY:0});
-    if(cache.rhr)    drawLine('rhrC','rhrO',  cache.rhr, {color:'#ff6b6b',unit:'bpm'});
+    if(cache.hr)     drawLine('hrC','hrO',    cache.hr,  {color:C.hr,  valueKey:'avg', unit:'bpm'});
+    if(cache.hrv)    drawLine('hrvC','hrvO',  cache.hrv, {color:C.hrv, unit:'ms', minY:0});
+    if(cache.rhr)    drawLine('rhrC','rhrO',  cache.rhr, {color:C.rhr, unit:'bpm'});
     if(cache.sleep)  drawSleep('slC', cache.sleep);
     if(cache.rec){
-      if(cache.rec.whoop?.length) drawLine('whoopC','whoopO',cache.rec.whoop,{color:'var(--rec)',unit:'%',minY:0,maxY:100});
-      if(cache.rec.oura?.length)  drawLine('ouraC','ouraO',  cache.rec.oura, {color:'var(--read)',unit:'',minY:0,maxY:100});
+      if(cache.rec.whoop?.length) drawLine('whoopC','whoopO',cache.rec.whoop,{color:C.rec,  unit:'%', minY:0, maxY:100});
+      if(cache.rec.oura?.length)  drawLine('ouraC','ouraO',  cache.rec.oura, {color:C.read, unit:'',  minY:0, maxY:100});
     }
   }, 120);
 });
