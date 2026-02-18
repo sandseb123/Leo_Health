@@ -18,8 +18,8 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 
-from .db.ingest import ingest_apple_health, ingest_whoop, ingest_fitbit
-from .parsers import apple_health, whoop as whoop_parser, fitbit as fitbit_parser
+from .db.ingest import ingest_apple_health, ingest_whoop, ingest_fitbit, ingest_oura
+from .parsers import apple_health, whoop as whoop_parser, fitbit as fitbit_parser, oura as oura_parser
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -103,6 +103,18 @@ def _is_fitbit_export(filepath: Path) -> bool:
     return "fitbit" in name
 
 
+def _is_oura_export(filepath: Path) -> bool:
+    """Check if a file looks like an Oura Ring CSV export."""
+    if filepath.suffix.lower() != ".csv":
+        return False
+    name = filepath.name.lower()
+    return (
+        "oura" in name or
+        "readiness" in name or
+        ("sleep" in name and "whoop" not in name)   # avoid double-matching Whoop sleep CSV
+    )
+
+
 def _is_file_ready(filepath: Path) -> bool:
     """
     Check if a file has finished copying (AirDrop files arrive mid-write).
@@ -153,6 +165,25 @@ def _process_whoop(filepath: Path) -> dict:
     return counts
 
 
+def _process_oura(filepath: Path) -> dict:
+    """Parse and ingest an Oura Ring CSV export."""
+    print(f"  💍 Detected Oura export: {filepath.name}")
+    _notify("Leo Health", f"Parsing {filepath.name}...")
+
+    data = oura_parser.parse(str(filepath))
+    counts = ingest_oura(data)
+    total = sum(counts.values())
+
+    summary = (
+        f"✓ {counts.get('oura_readiness', 0):,} readiness  "
+        f"· {counts.get('sleep', 0):,} sleep  "
+        f"· {counts.get('hrv', 0):,} HRV"
+    )
+    print(f"  {summary}")
+    _notify("Leo Health ✓", f"Oura ingested — {total:,} records added")
+    return counts
+
+
 def _process_fitbit(filepath: Path) -> dict:
     """Parse and ingest a Fitbit data export ZIP."""
     print(f"  🟦 Detected Fitbit export: {filepath.name}")
@@ -192,8 +223,9 @@ def scan_once(watch_folder: Path, processed: set) -> set:
         is_apple = _is_apple_health_export(entry)
         is_whoop = _is_whoop_export(entry)
         is_fitbit = _is_fitbit_export(entry)
+        is_oura = _is_oura_export(entry)
 
-        if not (is_apple or is_whoop or is_fitbit):
+        if not (is_apple or is_whoop or is_fitbit or is_oura):
             continue
 
         # Wait for file to finish copying
@@ -220,6 +252,8 @@ def scan_once(watch_folder: Path, processed: set) -> set:
                 _process_whoop(entry)
             elif is_fitbit:
                 _process_fitbit(entry)
+            elif is_oura:
+                _process_oura(entry)
 
             _mark_processed(fhash)
             processed.add(fhash)

@@ -76,6 +76,7 @@ def main():
             "apple_health": "📱 Apple Health",
             "whoop":        "⌚ Whoop",
             "fitbit":       "🟦 Fitbit",
+            "oura":         "💍 Oura",
         }
         parts = []
         for row in source_rows:
@@ -194,6 +195,28 @@ def main():
         print(f"      Recovery:  {BOLD}{WHITE}{int(whoop['avg_recovery'] or 0)}%{R} avg")
         print(f"      HRV:       {BOLD}{WHITE}{whoop['avg_hrv'] or 'N/A'} ms{R} avg")
         print(f"      Resting:   {BOLD}{WHITE}{int(whoop['avg_rhr'] or 0)} BPM{R} avg")
+        print()
+
+    # ── Oura ──────────────────────────────────────────────────────────────────
+    try:
+        oura_count = conn.execute("SELECT COUNT(*) as n FROM oura_readiness").fetchone()["n"]
+    except Exception:
+        oura_count = 0
+    if oura_count > 0:
+        oura = conn.execute("""
+            SELECT
+                ROUND(AVG(readiness_score), 0) as avg_readiness,
+                ROUND(AVG(hrv_balance), 1) as avg_hrv,
+                ROUND(AVG(resting_heart_rate), 0) as avg_rhr,
+                COUNT(*) as days
+            FROM oura_readiness
+        """).fetchone()
+        print(f"{BOLD}{CYAN}  💍  Oura Ring{R}  {DIM}({_format_num(oura['days'])} days){R}")
+        print(f"      Readiness: {BOLD}{WHITE}{int(oura['avg_readiness'] or 0)}%{R} avg")
+        if oura['avg_hrv']:
+            print(f"      HRV:       {BOLD}{WHITE}{oura['avg_hrv']} ms{R} avg")
+        if oura['avg_rhr']:
+            print(f"      Resting:   {BOLD}{WHITE}{int(oura['avg_rhr'])} BPM{R} avg")
         print()
 
     # ── Date range ────────────────────────────────────────────────────────────
