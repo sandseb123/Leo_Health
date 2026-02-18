@@ -100,6 +100,21 @@ CREATE TABLE IF NOT EXISTS whoop_strain (
     created_at      TEXT DEFAULT (datetime('now'))
 );
 
+-- Oura Ring readiness scores
+CREATE TABLE IF NOT EXISTS oura_readiness (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    source                  TEXT NOT NULL DEFAULT 'oura',
+    recorded_at             TEXT NOT NULL,
+    readiness_score         REAL,               -- 0–100
+    hrv_balance             REAL,               -- ms RMSSD (relative to 3-month baseline)
+    resting_heart_rate      REAL,               -- BPM
+    temperature_deviation   REAL,               -- degrees C from personal baseline
+    recovery_index          REAL,               -- 0–100
+    activity_balance        REAL,               -- 0–100
+    sleep_balance           REAL,               -- 0–100
+    created_at              TEXT DEFAULT (datetime('now'))
+);
+
 -- Indexes for common query patterns
 CREATE INDEX IF NOT EXISTS idx_heart_rate_recorded_at ON heart_rate(recorded_at);
 CREATE INDEX IF NOT EXISTS idx_hrv_recorded_at ON hrv(recorded_at);
@@ -107,6 +122,7 @@ CREATE INDEX IF NOT EXISTS idx_sleep_recorded_at ON sleep(recorded_at);
 CREATE INDEX IF NOT EXISTS idx_workouts_recorded_at ON workouts(recorded_at);
 CREATE INDEX IF NOT EXISTS idx_whoop_recovery_recorded_at ON whoop_recovery(recorded_at);
 CREATE INDEX IF NOT EXISTS idx_whoop_strain_recorded_at ON whoop_strain(recorded_at);
+CREATE INDEX IF NOT EXISTS idx_oura_readiness_recorded_at ON oura_readiness(recorded_at);
 CREATE INDEX IF NOT EXISTS idx_heart_rate_source ON heart_rate(source);
 CREATE INDEX IF NOT EXISTS idx_hrv_source ON hrv(source);
 """
@@ -154,7 +170,7 @@ def get_stats(db_path: str = DEFAULT_DB_PATH) -> dict:
     Return row counts for all tables — used by the CLI status command.
     """
     conn = get_connection(db_path)
-    tables = ["heart_rate", "hrv", "sleep", "workouts", "whoop_recovery", "whoop_strain"]
+    tables = ["heart_rate", "hrv", "sleep", "workouts", "whoop_recovery", "whoop_strain", "oura_readiness"]
     stats = {}
     for table in tables:
         try:
