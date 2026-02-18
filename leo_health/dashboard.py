@@ -74,7 +74,8 @@ def api_summary():
             COALESCE(deep_sleep_hours,0)+COALESCE(rem_sleep_hours,0)+
             COALESCE(light_sleep_hours,0)
         ),2) AS v
-        FROM sleep WHERE recorded_at>=? AND source IN ('whoop','oura') AND stage='asleep'
+        FROM sleep WHERE recorded_at>=? AND source IN ('whoop','oura')
+          AND (stage='asleep' OR stage IS NULL)
     """, (s,))
     if not sleep_agg.get("v"):
         sleep_agg = _q1("""
