@@ -1,4 +1,4 @@
-# CLAUDE.md — Leo Health
+# LEO.md — Leo Health
 
 This file provides context for AI assistants working on the Leo Health codebase.
 
