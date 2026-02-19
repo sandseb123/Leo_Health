@@ -3,8 +3,10 @@ Leo Core — Auto Watcher
 Monitors your Downloads folder for new Apple Health or Whoop exports
 and automatically ingests them into ~/.leo-health/leo.db
 
+Works on: macOS + Linux
+
 Usage:
-    python -m leo_health.watcher          # watches ~/Downloads
+    python -m leo_health.watcher              # watches ~/Downloads
     python -m leo_health.watcher --folder ~/Desktop
 
 ZERO network imports. Stdlib only.
@@ -14,39 +16,57 @@ import os
 import time
 import hashlib
 import argparse
+import platform
 import subprocess
 from pathlib import Path
 from datetime import datetime
 
-from .db.ingest import ingest_apple_health, ingest_whoop, ingest_fitbit, ingest_oura
-from .parsers import apple_health, whoop as whoop_parser, fitbit as fitbit_parser, oura as oura_parser
+from .db.ingest import ingest_apple_health, ingest_whoop
+from .parsers import apple_health, whoop as whoop_parser
 
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# ── Config ────────────────────────────────────────────────────────
 
 WATCH_FOLDER = Path.home() / "Downloads"
 PROCESSED_LOG = Path.home() / ".leo-health" / "processed.txt"
 CHECK_INTERVAL = 10  # seconds between scans
-SILENT = True  # set to False to enable macOS notifications
+SILENT = False       # set True to disable notifications
 
 
-# ── Notification ──────────────────────────────────────────────────────────────
+# ── Platform detection ────────────────────────────────────────────
+
+SYSTEM = platform.system()  # 'Darwin' or 'Linux'
+
+
+# ── Notifications ─────────────────────────────────────────────────
 
 def _notify(title: str, message: str):
-    """Send a macOS notification. Set SILENT=True above to disable."""
+    """
+    Send a desktop notification.
+    macOS: uses osascript
+    Linux: uses notify-send (install: sudo apt install libnotify-bin)
+    Falls back silently if neither is available.
+    """
     if SILENT:
         return
     try:
-        script = f'display notification "{message}" with title "{title}" sound name "Glass"'
-        subprocess.run(["osascript", "-e", script], check=False, capture_output=True)
+        if SYSTEM == "Darwin":
+            script = f'display notification "{message}" with title "{title}" sound name "Glass"'
+            subprocess.run(["osascript", "-e", script], check=False, capture_output=True)
+        elif SYSTEM == "Linux":
+            subprocess.run(
+                ["notify-send", "--app-name=Leo Health", title, message],
+                check=False,
+                capture_output=True
+            )
     except Exception:
-        pass  # Non-macOS or osascript not available — fail silently
+        pass  # Fail silently — notifications are nice-to-have
 
 
-# ── File fingerprinting ───────────────────────────────────────────────────────
+# ── File fingerprinting ───────────────────────────────────────────
 
 def _file_hash(filepath: str) -> str:
-    """MD5 of first 64KB — fast enough to fingerprint without reading whole file."""
+    """MD5 of first 64KB — fast fingerprint without reading whole file."""
     h = hashlib.md5()
     with open(filepath, "rb") as f:
         h.update(f.read(65536))
@@ -67,19 +87,14 @@ def _mark_processed(file_hash: str):
         f.write(file_hash + "\n")
 
 
-# ── File detection ────────────────────────────────────────────────────────────
+# ── File detection ────────────────────────────────────────────────
 
 def _is_apple_health_export(filepath: Path) -> bool:
     """Check if a file looks like an Apple Health export.zip"""
     if filepath.suffix.lower() != ".zip":
         return False
-    # Check filename patterns Apple Health uses
     name = filepath.name.lower()
-    return (
-        "export" in name or
-        "apple_health" in name or
-        "health" in name
-    )
+    return "export" in name or "apple_health" in name or "health" in name
 
 
 def _is_whoop_export(filepath: Path) -> bool:
@@ -87,38 +102,22 @@ def _is_whoop_export(filepath: Path) -> bool:
     if filepath.suffix.lower() != ".csv":
         return False
     name = filepath.name.lower()
-    return (
-        "whoop" in name or
-        "recovery" in name or
-        "strain" in name or
-        "sleep" in name
-    )
-
-
-def _is_fitbit_export(filepath: Path) -> bool:
-    """Check if a file looks like a Fitbit data export ZIP."""
-    if filepath.suffix.lower() != ".zip":
-        return False
-    name = filepath.name.lower()
-    return "fitbit" in name
+    return "whoop" in name or "recovery" in name or "strain" in name
 
 
 def _is_oura_export(filepath: Path) -> bool:
-    """Check if a file looks like an Oura Ring CSV export."""
-    if filepath.suffix.lower() != ".csv":
+    """Check if a file looks like an Oura Ring export."""
+    if filepath.suffix.lower() not in (".json", ".csv"):
         return False
     name = filepath.name.lower()
-    return (
-        "oura" in name or
-        "readiness" in name or
-        ("sleep" in name and "whoop" not in name)   # avoid double-matching Whoop sleep CSV
-    )
+    return "oura" in name or "readiness" in name
 
 
 def _is_file_ready(filepath: Path) -> bool:
     """
-    Check if a file has finished copying (AirDrop files arrive mid-write).
-    We check that file size is stable over 2 seconds.
+    Check if a file has finished copying.
+    AirDrop and network transfers arrive mid-write.
+    We verify file size is stable over 2 seconds.
     """
     try:
         size1 = filepath.stat().st_size
@@ -129,11 +128,11 @@ def _is_file_ready(filepath: Path) -> bool:
         return False
 
 
-# ── Processors ────────────────────────────────────────────────────────────────
+# ── Processors ────────────────────────────────────────────────────
 
 def _process_apple_health(filepath: Path) -> dict:
     """Parse and ingest an Apple Health export.zip"""
-    print(f"  📱 Detected Apple Health export: {filepath.name}")
+    print(f"  📱 Apple Health export detected: {filepath.name}")
     _notify("Leo Health", f"Parsing {filepath.name}...")
 
     data = apple_health.parse(str(filepath))
@@ -147,13 +146,13 @@ def _process_apple_health(filepath: Path) -> dict:
         f"· {counts.get('workouts', 0):,} workouts"
     )
     print(f"  {summary}")
-    _notify("Leo Health ✓", f"Apple Health ingested — {total:,} records added")
+    _notify("Leo Health ✓", f"Done — {total:,} records added")
     return counts
 
 
 def _process_whoop(filepath: Path) -> dict:
     """Parse and ingest a Whoop CSV export."""
-    print(f"  ⌚ Detected Whoop export: {filepath.name}")
+    print(f"  ⌚ Whoop export detected: {filepath.name}")
     _notify("Leo Health", f"Parsing {filepath.name}...")
 
     data = whoop_parser.parse(str(filepath))
@@ -161,50 +160,11 @@ def _process_whoop(filepath: Path) -> dict:
     total = sum(counts.values())
 
     print(f"  ✓ {total:,} Whoop records ingested")
-    _notify("Leo Health ✓", f"Whoop data ingested — {total:,} records added")
+    _notify("Leo Health ✓", f"Done — {total:,} Whoop records added")
     return counts
 
 
-def _process_oura(filepath: Path) -> dict:
-    """Parse and ingest an Oura Ring CSV export."""
-    print(f"  💍 Detected Oura export: {filepath.name}")
-    _notify("Leo Health", f"Parsing {filepath.name}...")
-
-    data = oura_parser.parse(str(filepath))
-    counts = ingest_oura(data)
-    total = sum(counts.values())
-
-    summary = (
-        f"✓ {counts.get('oura_readiness', 0):,} readiness  "
-        f"· {counts.get('sleep', 0):,} sleep  "
-        f"· {counts.get('hrv', 0):,} HRV"
-    )
-    print(f"  {summary}")
-    _notify("Leo Health ✓", f"Oura ingested — {total:,} records added")
-    return counts
-
-
-def _process_fitbit(filepath: Path) -> dict:
-    """Parse and ingest a Fitbit data export ZIP."""
-    print(f"  🟦 Detected Fitbit export: {filepath.name}")
-    _notify("Leo Health", f"Parsing {filepath.name}...")
-
-    data = fitbit_parser.parse(str(filepath))
-    counts = ingest_fitbit(data)
-    total = sum(counts.values())
-
-    summary = (
-        f"✓ {counts.get('heart_rate', 0):,} resting HR  "
-        f"· {counts.get('hrv', 0):,} HRV  "
-        f"· {counts.get('sleep', 0):,} sleep  "
-        f"· {counts.get('workouts', 0):,} workouts"
-    )
-    print(f"  {summary}")
-    _notify("Leo Health ✓", f"Fitbit ingested — {total:,} records added")
-    return counts
-
-
-# ── Scanner ───────────────────────────────────────────────────────────────────
+# ── Scanner ───────────────────────────────────────────────────────
 
 def scan_once(watch_folder: Path, processed: set) -> set:
     """
@@ -222,17 +182,14 @@ def scan_once(watch_folder: Path, processed: set) -> set:
 
         is_apple = _is_apple_health_export(entry)
         is_whoop = _is_whoop_export(entry)
-        is_fitbit = _is_fitbit_export(entry)
         is_oura = _is_oura_export(entry)
 
-        if not (is_apple or is_whoop or is_fitbit or is_oura):
+        if not (is_apple or is_whoop or is_oura):
             continue
 
-        # Wait for file to finish copying
         if not _is_file_ready(entry):
             continue
 
-        # Skip already processed files
         try:
             fhash = _file_hash(str(entry))
         except OSError:
@@ -241,7 +198,6 @@ def scan_once(watch_folder: Path, processed: set) -> set:
         if fhash in processed:
             continue
 
-        # Process it
         timestamp = datetime.now().strftime("%H:%M:%S")
         print(f"\n[{timestamp}] New file detected: {entry.name}")
 
@@ -250,10 +206,9 @@ def scan_once(watch_folder: Path, processed: set) -> set:
                 _process_apple_health(entry)
             elif is_whoop:
                 _process_whoop(entry)
-            elif is_fitbit:
-                _process_fitbit(entry)
             elif is_oura:
-                _process_oura(entry)
+                print(f"  🔵 Oura export detected — parser coming soon!")
+                _notify("Leo Health", "Oura parser coming in next update!")
 
             _mark_processed(fhash)
             processed.add(fhash)
@@ -265,30 +220,36 @@ def scan_once(watch_folder: Path, processed: set) -> set:
     return processed
 
 
-# ── Main loop ─────────────────────────────────────────────────────────────────
+# ── Main loop ─────────────────────────────────────────────────────
 
 def watch(folder: Path = WATCH_FOLDER):
     """
     Start watching a folder for new health exports.
+    Works on macOS and Linux.
     Runs until interrupted with Ctrl+C.
     """
     os.makedirs(Path.home() / ".leo-health", exist_ok=True)
 
+    platform_note = "AirDrop exports here" if SYSTEM == "Darwin" else "Copy exports here"
+
     print(f"""
-╔═══════════════════════════════════════╗
-║         Leo Health — Watcher          ║
-╚═══════════════════════════════════════╝
-  Watching: {folder}
-  Database: ~/.leo-health/leo.db
-  
-  AirDrop your Apple Health export.zip
-  or Whoop CSVs to this folder and Leo
-  will automatically parse them.
+╔═══════════════════════════════════════════╗
+║          Leo Health — Watcher             ║
+║          {SYSTEM:<33}║
+╚═══════════════════════════════════════════╝
+  Watching:  {folder}
+  Database:  ~/.leo-health/leo.db
+  Platform:  {SYSTEM}
+
+  {platform_note} and Leo will
+  automatically parse them.
+
+  Supported: Apple Health .zip · Whoop .csv · Oura .json
 
   Press Ctrl+C to stop.
 """)
 
-    _notify("Leo Health", "Watcher started — ready for your health exports")
+    _notify("Leo Health", f"Watcher started on {SYSTEM}")
     processed = _load_processed()
 
     try:
@@ -299,18 +260,28 @@ def watch(folder: Path = WATCH_FOLDER):
         print("\n\nWatcher stopped.")
 
 
-# ── CLI entry ─────────────────────────────────────────────────────────────────
+# ── CLI entry ─────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Leo Health Watcher — auto-ingest Apple Health & Whoop exports"
+        description="Leo Health Watcher — auto-ingest health exports (macOS + Linux)"
     )
     parser.add_argument(
         "--folder",
         default=str(WATCH_FOLDER),
         help=f"Folder to watch (default: {WATCH_FOLDER})"
     )
+    parser.add_argument(
+        "--silent",
+        action="store_true",
+        help="Disable desktop notifications"
+    )
     args = parser.parse_args()
+
+    global SILENT
+    if args.silent:
+        SILENT = True
+
     watch(Path(args.folder))
 
 
