@@ -18,6 +18,7 @@ import json
 import os
 import socketserver
 import sqlite3
+from collections import defaultdict
 import sys
 import threading
 import time
@@ -46,11 +47,12 @@ def _startup_migrate():
     Apple Health imports, then lock the table with a unique index so
     INSERT OR IGNORE prevents future duplicates.
 
-    Runs once at dashboard start — fixes inflated stage totals (e.g. 17 h
-    displayed) without requiring a full re-import.
+    Runs once at dashboard start — fixes inflated stage totals without
+    requiring a full re-import.
     """
     try:
         c = _conn()
+        before = c.execute("SELECT COUNT(*) FROM sleep").fetchone()[0]
         # Keep only the earliest row per unique sleep segment
         c.execute("""
             DELETE FROM sleep
@@ -64,6 +66,10 @@ def _startup_migrate():
                          COALESCE(device, '')
             )
         """)
+        after = c.execute("SELECT COUNT(*) FROM sleep").fetchone()[0]
+        deleted = before - after
+        if deleted > 0:
+            print(f"      Deduplicated sleep: {before} -> {after} rows ({deleted} duplicates removed)")
         # Expression index makes INSERT OR IGNORE work for future imports
         c.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_sleep_unique
@@ -77,8 +83,8 @@ def _startup_migrate():
         """)
         c.commit()
         c.close()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"      Warning: sleep migration failed: {e}")
 
 def _q(sql, params=()):
     """Run a SELECT and return list-of-dicts; returns [] on any error."""
@@ -213,6 +219,70 @@ def _dur_hours(end_col, start_col):
     return f"(julianday(SUBSTR({end_col},1,19))-julianday(SUBSTR({start_col},1,19)))*24"
 
 
+_STAGE_KEY = {
+    "asleepdeep": "deep", "asleeprem": "rem", "asleepcore": "core",
+    "asleepunspecified": "unspec", "awake": "awake",
+}
+
+
+def _merge_sleep_segments(segments):
+    """
+    Merge overlapping Apple Health sleep intervals.
+
+    Apple Watch can write both short per-cycle stage segments (~30 min)
+    AND longer processed blocks that cover the same time range.  A naive
+    SUM() double-counts the overlap; this function computes the true
+    *union* of time for each (date, device, stage) group, then returns
+    one row per (date, device) matching the dict shape the caller expects.
+    """
+    # Group raw segments by (date, device, stage)
+    groups = defaultdict(list)
+    for seg in segments:
+        key = (seg["date"], seg["device"], seg["stage"])
+        groups[key].append((seg["seg_start"], seg["seg_end"]))
+
+    # Merge overlapping intervals and measure total hours
+    def _merged_hours(intervals):
+        iv = sorted(intervals)
+        merged = [list(iv[0])]
+        for s, e in iv[1:]:
+            if s <= merged[-1][1]:              # overlapping or touching
+                merged[-1][1] = max(merged[-1][1], e)
+            else:
+                merged.append([s, e])
+        total = 0.0
+        for s, e in merged:
+            try:
+                ds = datetime.fromisoformat(s)
+                de = datetime.fromisoformat(e)
+                total += (de - ds).total_seconds() / 3600.0
+            except (ValueError, TypeError):
+                pass
+        return round(total, 2)
+
+    # Aggregate per (date, device)
+    dd = defaultdict(lambda: {"deep": 0, "rem": 0, "core": 0,
+                               "unspec": 0, "awake": 0, "device": ""})
+    for (date, device, stage), ivs in groups.items():
+        dd[(date, device)]["device"] = device
+        dd[(date, device)][_STAGE_KEY.get(stage, "unspec")] += _merged_hours(ivs)
+
+    # Build result list matching the shape the caller expects
+    raw = []
+    for (date, device), vals in sorted(dd.items()):
+        raw.append({
+            "date": date,
+            "device": vals["device"],
+            "deep": round(vals["deep"], 2),
+            "rem": round(vals["rem"], 2),
+            "core": round(vals["core"], 2),
+            "unspec": round(vals["unspec"], 2),
+            "awake": round(vals["awake"], 2),
+            "efficiency": 0,
+        })
+    return raw
+
+
 def api_sleep(days=30):
     s = _since(days)
 
@@ -234,30 +304,36 @@ def api_sleep(days=30):
     # ── 2. Apple Health detailed stages ──────────────────────────────────────
     # Apple Health stores stage as lowercased enum suffix:
     #   asleepdeep, asleeprem, asleepcore, asleepunspecified, awake, in_bed
-    # Two sources of inflation to guard against:
+    #
+    # Sources of inflation to guard against:
     #   A) Multiple devices (Apple Watch + AutoSleep) writing for the same night
     #      → group by device, pick device with most deep+REM (best stage data)
     #   B) Same device writes both granular stage segments AND a long
     #      asleepunspecified umbrella for the whole night (Apple Watch behaviour)
     #      → if device has any deep/rem/core, drop asleepunspecified entirely
-    dur = _dur_hours("end", "start")
-    raw = _q(f"""
+    #   C) Overlapping segments: Watch writes both short per-cycle segments
+    #      AND longer processed blocks covering the same time range. A naive
+    #      SUM() double-counts these. Fix: merge overlapping intervals in
+    #      Python per (date, device, stage) and measure the union.
+    #   D) Duplicate rows from re-importing the same export (handled by the
+    #      UNIQUE index, but interval merging also collapses exact dupes).
+    segments = _q("""
         SELECT date(recorded_at) AS date,
                device,
-               ROUND(COALESCE(SUM(CASE WHEN stage='asleepdeep' THEN {dur} END),0),2) AS deep,
-               ROUND(COALESCE(SUM(CASE WHEN stage='asleeprem'  THEN {dur} END),0),2) AS rem,
-               ROUND(COALESCE(SUM(CASE WHEN stage='asleepcore' THEN {dur} END),0),2) AS core,
-               ROUND(COALESCE(SUM(CASE WHEN stage='asleepunspecified' THEN {dur} END),0),2) AS unspec,
-               ROUND(COALESCE(SUM(CASE WHEN stage='awake'      THEN {dur} END),0),2) AS awake,
-               0 AS efficiency
+               stage,
+               SUBSTR(start, 1, 19) AS seg_start,
+               SUBSTR(end,   1, 19) AS seg_end
         FROM sleep
         WHERE recorded_at>=? AND source='apple_health'
           AND stage IN ('asleepdeep','asleeprem','asleepcore','asleepunspecified','awake')
           AND end IS NOT NULL AND start IS NOT NULL
           AND length(end)>=19 AND length(start)>=19
-        GROUP BY date(recorded_at), device
-        ORDER BY date
+        ORDER BY date, device, stage, start
     """, (s,))
+    if segments:
+        raw = _merge_sleep_segments(segments)
+    else:
+        raw = []
     # Device selection priority:
     #   1. Devices whose name contains "watch" (the physical Apple Watch)
     #      — always preferred over third-party apps (AutoSleep, Sleep Cycle …)
