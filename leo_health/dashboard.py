@@ -39,6 +39,47 @@ def _conn():
     c.row_factory = sqlite3.Row
     return c
 
+
+def _startup_migrate():
+    """
+    Idempotent migration: remove duplicate sleep rows created by multiple
+    Apple Health imports, then lock the table with a unique index so
+    INSERT OR IGNORE prevents future duplicates.
+
+    Runs once at dashboard start — fixes inflated stage totals (e.g. 17 h
+    displayed) without requiring a full re-import.
+    """
+    try:
+        c = _conn()
+        # Keep only the earliest row per unique sleep segment
+        c.execute("""
+            DELETE FROM sleep
+            WHERE id NOT IN (
+                SELECT MIN(id)
+                FROM sleep
+                GROUP BY source,
+                         COALESCE(stage,  ''),
+                         COALESCE(start,  ''),
+                         COALESCE(end,    ''),
+                         COALESCE(device, '')
+            )
+        """)
+        # Expression index makes INSERT OR IGNORE work for future imports
+        c.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_sleep_unique
+            ON sleep (
+                source,
+                COALESCE(stage,  ''),
+                COALESCE(start,  ''),
+                COALESCE(end,    ''),
+                COALESCE(device, '')
+            )
+        """)
+        c.commit()
+        c.close()
+    except Exception:
+        pass
+
 def _q(sql, params=()):
     """Run a SELECT and return list-of-dicts; returns [] on any error."""
     try:
@@ -1514,6 +1555,8 @@ def main():
         print("     • Run:  leo-watch")
         print()
         return
+
+    _startup_migrate()   # deduplicate sleep rows from multiple imports
 
     url = f"http://{HOST}:{PORT}"
 
