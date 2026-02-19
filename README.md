@@ -67,10 +67,33 @@ leo-watch    # start watching Downloads for new exports
 
 ## Get your data in
 
-**Step 1 — Export from Apple Health (iPhone):**
-1. Open the Health app
-2. Tap your profile picture → **Export All Health Data**
-3. AirDrop it to your Mac
+## Get your data in
+
+### Apple Health export
+
+**macOS:**
+1. Open Health app → tap your profile picture
+2. Tap **Export All Health Data**
+3. AirDrop it to your Mac → Leo auto-detects it
+
+**Linux:**
+1. Open Health app → tap your profile picture
+2. Tap **Export All Health Data**
+3. Share via email or Google Drive → download to ~/Downloads/
+4. Or use [LocalSend](https://localsend.org) for wireless transfer
+5. Leo auto-detects it within 10 seconds
+
+### Whoop export
+
+1. Open Whoop app → Profile → Export Data
+2. Check email for CSV files
+3. Save to ~/Downloads/ → Leo auto-detects them
+
+### Oura export
+
+1. Open Oura app → Profile → Export Data
+2. Save to ~/Downloads/ → Leo auto-detects it
+*(Oura parser coming soon)*
 
 **Step 2 — Start the watcher:**
 ```bash
