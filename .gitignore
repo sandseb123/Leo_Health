@@ -34,3 +34,14 @@ htmlcov/
 # Leo Health runtime (user data — never commit)
 *.db
 processed.txt
+
+# Private / internal documents — never push to GitHub
+*_MARKETING.md
+*_STRATEGY.md
+*_INTERNAL.md
+PRIVATE_*
+
+# Leo Max — paid tier (local only, never push to GitHub)
+leo_max/
+build_leo_max.sh
+tools/
