@@ -513,17 +513,32 @@ def api_recovery(days=30):
 
 def api_workouts(days=30):
     return _q("""
-        SELECT recorded_at,
-               date(recorded_at)               AS date,
-               time(recorded_at)               AS time,
-               activity,
-               ROUND(duration_minutes, 1)      AS duration,
-               ROUND(calories, 0)              AS calories,
-               ROUND(distance_km, 2)           AS distance_km,
-               source
-        FROM workouts
-        WHERE recorded_at >= ?
-        ORDER BY recorded_at DESC
+        SELECT w.recorded_at,
+               date(w.recorded_at)               AS date,
+               time(w.recorded_at)               AS time,
+               w.activity,
+               ROUND(w.duration_minutes, 1)      AS duration,
+               ROUND(w.calories, 0)              AS calories,
+               ROUND(w.distance_km, 2)           AS distance_km,
+               w.end,
+               w.source,
+               (SELECT ROUND(AVG(h.value), 0)
+                FROM heart_rate h
+                WHERE h.metric = 'heart_rate'
+                  AND h.recorded_at >= w.recorded_at
+                  AND h.recorded_at <= COALESCE(w.end,
+                        datetime(w.recorded_at, '+2 hours'))
+               ) AS avg_hr,
+               (SELECT ROUND(MAX(h.value), 0)
+                FROM heart_rate h
+                WHERE h.metric = 'heart_rate'
+                  AND h.recorded_at >= w.recorded_at
+                  AND h.recorded_at <= COALESCE(w.end,
+                        datetime(w.recorded_at, '+2 hours'))
+               ) AS max_hr
+        FROM workouts w
+        WHERE w.recorded_at >= ?
+        ORDER BY w.recorded_at DESC
         LIMIT 60
     """, (_since(days),))
 
@@ -622,21 +637,34 @@ canvas{display:block;width:100%}
 .wo-chev{font-size:11px;color:var(--muted);transition:transform .2s;flex-shrink:0}
 .wo.open .wo-chev{transform:rotate(90deg)}
 /* Expandable detail panel */
-.wo-detail{max-height:0;overflow:hidden;transition:max-height .3s ease}
-.wo.open .wo-detail{max-height:400px}
+.wo-detail{max-height:0;overflow:hidden;transition:max-height .35s ease}
+.wo.open .wo-detail{max-height:700px}
 .wo-detail-inner{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));
   gap:10px 16px;padding:0 14px 10px 46px}
 .wo-stat{display:flex;flex-direction:column;gap:2px}
 .wo-stat-val{font-size:14px;font-weight:600}
 .wo-stat-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
 /* Workout HR chart + route map */
-.wo-detail-charts{display:flex;gap:12px;padding:0 14px 14px 14px;align-items:flex-start}
+.wo-detail-charts{display:flex;gap:12px;padding:0 14px 10px 14px;align-items:flex-start}
 .wo-hr-chart{flex:1;min-width:0}
 .wo-hr-chart canvas{display:block;width:100%;height:80px;border-radius:6px}
 .wo-hr-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px}
 .wo-route-wrap{width:130px;flex-shrink:0}
 .wo-route-wrap svg{display:block;width:130px;height:130px;border-radius:8px}
 .wo-route-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px}
+/* HR pill in collapsed row */
+.wo-hr-pill{font-size:11px;font-weight:500;color:rgba(255,55,95,.8);letter-spacing:.1px;white-space:nowrap}
+.wo-hr-pill-sep{margin:0 2px;opacity:.5}
+/* HR zone bars */
+.wo-zones{display:none;padding:0 14px 14px 14px}
+.wo-zone-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:7px}
+.zone-row{display:flex;align-items:center;gap:7px;margin-bottom:5px}
+.zone-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.zone-name{font-size:10px;font-weight:600;color:var(--dim);width:22px;flex-shrink:0}
+.zone-range{font-size:10px;color:var(--muted);width:58px;flex-shrink:0;letter-spacing:.2px}
+.zone-bar-bg{flex:1;height:5px;background:rgba(255,255,255,.07);border-radius:3px;overflow:hidden}
+.zone-bar-fill{height:100%;border-radius:3px;transition:width .5s ease;opacity:.85}
+.zone-time{font-size:11px;font-weight:500;color:var(--dim);width:38px;text-align:right;flex-shrink:0}
 
 /* ── Tooltip ─────────────────────────────────────────────────────────── */
 #tt{position:fixed;background:rgba(14,14,26,.95);border:1px solid rgba(255,255,255,.12);
@@ -1285,11 +1313,80 @@ function drawWoRoute(svgId, points) {
   `;
 }
 
-// ── Load workout detail (HR chart + route) ────────────────────────────────────
+// ── Heart rate zone bars ───────────────────────────────────────────────────────
+function drawZones(zonesId, barsId, hrData, maxHrOverride) {
+  const wrap = $(zonesId);
+  if (!wrap || !hrData || hrData.length < 4) return;
+
+  const vals = hrData.map(d => +d.value).filter(v => !isNaN(v) && v > 0);
+  if (vals.length < 4) return;
+
+  // Use the workout's recorded max HR as the 100% reference
+  const peak = maxHrOverride || Math.max(...vals);
+
+  const ZONES = [
+    { name: 'Z1', label: 'Recovery',  color: '#5ac8fa', min: 0.00, max: 0.60 },
+    { name: 'Z2', label: 'Aerobic',   color: '#34c759', min: 0.60, max: 0.70 },
+    { name: 'Z3', label: 'Tempo',     color: '#ffd60a', min: 0.70, max: 0.80 },
+    { name: 'Z4', label: 'Threshold', color: '#ff9f0a', min: 0.80, max: 0.90 },
+    { name: 'Z5', label: 'Max',       color: '#ff375f', min: 0.90, max: 9.99 },
+  ];
+
+  // Compute time in each zone using consecutive timestamp intervals
+  const timeSecs = ZONES.map(() => 0);
+  let totalSecs = 0;
+  for (let i = 0; i < hrData.length - 1; i++) {
+    const t0 = new Date(hrData[i].time).getTime();
+    const t1 = new Date(hrData[i+1].time).getTime();
+    const dt = Math.max(0, Math.min((t1 - t0) / 1000, 120)); // cap gap at 2 min
+    const mid = ((+hrData[i].value) + (+hrData[i+1].value)) / 2;
+    const pct = mid / peak;
+    const zi = ZONES.findIndex(z => pct >= z.min && pct < z.max);
+    if (zi >= 0) { timeSecs[zi] += dt; totalSecs += dt; }
+  }
+  // Fallback to sample counts if timestamps are unusable
+  if (totalSecs < 10) {
+    timeSecs.fill(0); totalSecs = 0;
+    vals.forEach(v => {
+      const pct = v / peak;
+      const zi = ZONES.findIndex(z => pct >= z.min && pct < z.max);
+      if (zi >= 0) { timeSecs[zi]++; totalSecs++; }
+    });
+  }
+  if (totalSecs === 0 || !timeSecs.some(t => t > 0)) return;
+
+  const maxT = Math.max(...timeSecs);
+  function fmtSecs(s) {
+    if (s === 0) return '—';
+    const m = Math.floor(s / 60), sec = Math.round(s % 60);
+    return m > 0 ? `${m}:${String(sec).padStart(2,'0')}` : `0:${String(sec).padStart(2,'0')}`;
+  }
+
+  const barsEl = $(barsId);
+  if (!barsEl) return;
+  barsEl.innerHTML = ZONES.map((z, i) => {
+    const fillPct = maxT > 0 ? Math.round((timeSecs[i] / maxT) * 100) : 0;
+    const loHR = Math.round(z.min * peak);
+    const hiHR = z.max >= 9 ? `${Math.round(0.90 * peak)}+` : Math.round(z.max * peak);
+    const bpmRange = `${loHR}–${hiHR}`;
+    return `<div class="zone-row">
+      <div class="zone-dot" style="background:${z.color}"></div>
+      <div class="zone-name">${z.name}</div>
+      <div class="zone-range">${bpmRange}</div>
+      <div class="zone-bar-bg"><div class="zone-bar-fill" style="width:${fillPct}%;background:${z.color}"></div></div>
+      <div class="zone-time">${fmtSecs(timeSecs[i])}</div>
+    </div>`;
+  }).join('');
+
+  wrap.style.display = '';
+}
+
+// ── Load workout detail (HR chart + route + zones) ────────────────────────────
 async function loadWoDetail(el, idx) {
   const start    = el.dataset.start;
   const end      = el.dataset.end || start;
   const activity = el.dataset.activity || '';
+  const maxHr    = +el.dataset.maxHr || 0;
 
   // Compute end time: if no end stored, use start + 2h as upper bound
   const endParam = end && end !== start ? end
@@ -1301,6 +1398,7 @@ async function loadWoDetail(el, idx) {
   const hrWrap = $(`woHrWrap${idx}`);
   if (hrData && hrData.length >= 4) {
     drawWoHR(`woHrC${idx}`, hrData);
+    drawZones(`woZones${idx}`, `woZoneBars${idx}`, hrData, maxHr || 0);
   } else if (hrWrap) {
     hrWrap.style.display = 'none';
   }
@@ -1336,19 +1434,24 @@ function renderWorkouts(data) {
                    : '';
     const canRoute = ROUTE_ACTS.has(key);
 
+    // HR pill shown in the collapsed row
+    const hrPill = (w.avg_hr || w.max_hr)
+      ? `<div class="wo-hr-pill">♥ ${w.avg_hr||'—'}<span class="wo-hr-pill-sep">/</span>${w.max_hr||'—'}</div>`
+      : '';
+
     const stats = [
       dur   && `<div class="wo-stat"><div class="wo-stat-val">${dur}</div><div class="wo-stat-lbl">Duration</div></div>`,
       dist  && `<div class="wo-stat"><div class="wo-stat-val">${dist}</div><div class="wo-stat-lbl">Distance</div></div>`,
       cals  && `<div class="wo-stat"><div class="wo-stat-val">${cals}</div><div class="wo-stat-lbl">Calories</div></div>`,
       pace  && `<div class="wo-stat"><div class="wo-stat-val">${pace}</div><div class="wo-stat-lbl">Pace</div></div>`,
+      w.avg_hr && `<div class="wo-stat"><div class="wo-stat-val">${w.avg_hr} <span style="font-size:10px;font-weight:400">bpm</span></div><div class="wo-stat-lbl">Avg HR</div></div>`,
+      w.max_hr && `<div class="wo-stat"><div class="wo-stat-val">${w.max_hr} <span style="font-size:10px;font-weight:400">bpm</span></div><div class="wo-stat-lbl">Max HR</div></div>`,
       w.source && `<div class="wo-stat"><div class="wo-stat-val" style="font-size:11px;font-weight:400">${w.source.replace('_',' ')}</div><div class="wo-stat-lbl">Source</div></div>`,
     ].filter(Boolean).join('');
 
-    const safeStart = encodeURIComponent(w.recorded_at||'');
-    const safeEnd   = encodeURIComponent(w.end||w.recorded_at||'');
-
     return `<div class="wo" onclick="toggleWo(this,${idx})"
-        data-start="${w.recorded_at||''}" data-end="${w.end||''}" data-activity="${key}" data-idx="${idx}">
+        data-start="${w.recorded_at||''}" data-end="${w.end||''}" data-activity="${key}" data-idx="${idx}"
+        data-avg-hr="${w.avg_hr||''}" data-max-hr="${w.max_hr||''}">
       <div class="wo-main">
         <div class="wo-left">
           <div class="wo-icon">${icon}</div>
@@ -1360,6 +1463,7 @@ function renderWorkouts(data) {
         <div class="wo-right">
           <div class="wo-dur">${dur}</div>
           ${dist ? `<div class="wo-cal">${dist}</div>` : (cals ? `<div class="wo-cal">${cals}</div>` : '')}
+          ${hrPill}
           <span class="wo-chev">›</span>
         </div>
       </div>
@@ -1374,6 +1478,10 @@ function renderWorkouts(data) {
             <div class="wo-route-lbl">Route</div>
             <svg id="woRtSvg${idx}" viewBox="0 0 130 130"></svg>
           </div>` : ''}
+        </div>
+        <div class="wo-zones" id="woZones${idx}">
+          <div class="wo-zone-lbl">Time in Zone</div>
+          <div id="woZoneBars${idx}"></div>
         </div>
       </div>
     </div>`;
