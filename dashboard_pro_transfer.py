@@ -1913,56 +1913,140 @@ function attachSleepHover(data) {
   const overlay = $('slO');
   if (!canvas || !overlay) return;
   const nights = data.slice(-Math.min(30, data.length));
-  const tt = $('tt'), ttDate = $('tt-date'), ttVal = $('tt-val'), ttSub = $('tt-sub');
   const wrap = canvas.parentElement;
   let lastIdx = -1;
+
+  const STAGES = [
+    { key:'deep',  color:'#5e5ce6',             label:'Deep'  },
+    { key:'rem',   color:'#bf5af2',             label:'REM'   },
+    { key:'light', color:'#32ade6',             label:'Light' },
+    { key:'awake', color:'rgba(255,149,0,0.85)', label:'Awake' },
+  ];
 
   function getIdx(e) {
     const rect = canvas.getBoundingClientRect();
     const mx = (e.clientX - rect.left) / rect.width * (canvas.width / (window.devicePixelRatio||1));
-    const pad = {l:36, r:10, t:10, b:26};
-    const cw = (canvas.width / (window.devicePixelRatio||1)) - pad.l - pad.r;
+    const cw = (canvas.width / (window.devicePixelRatio||1)) - 36 - 10;
     const barW = (cw - (nights.length-1)*3) / nights.length;
-    return Math.floor((mx - pad.l) / (barW + 3));
+    return Math.floor((mx - 36) / (barW + 3));
   }
 
-  function drawHighlight(idx) {
-    const dpr = window.devicePixelRatio||1;
-    const W = overlay.offsetWidth||600, H = overlay.offsetHeight||150;
-    overlay.width = W*dpr; overlay.height = H*dpr;
-    overlay.style.width = W+'px'; overlay.style.height = H+'px';
+  function rrect(cx, x, y, rw, rh, r) {
+    cx.beginPath();
+    cx.moveTo(x+r, y);
+    cx.lineTo(x+rw-r, y); cx.quadraticCurveTo(x+rw, y, x+rw, y+r);
+    cx.lineTo(x+rw, y+rh-r); cx.quadraticCurveTo(x+rw, y+rh, x+rw-r, y+rh);
+    cx.lineTo(x+r, y+rh); cx.quadraticCurveTo(x, y+rh, x, y+rh-r);
+    cx.lineTo(x, y+r); cx.quadraticCurveTo(x, y, x+r, y);
+    cx.closePath();
+  }
+
+  function hm(v) {
+    const hrs = Math.floor(v), min = Math.round((v - hrs) * 60);
+    return min > 0 ? `${hrs}h ${min}m` : `${hrs}h`;
+  }
+
+  function draw(idx) {
+    const dpr = window.devicePixelRatio || 1;
+    const W = overlay.offsetWidth || canvas.offsetWidth || 600;
+    const H = overlay.offsetHeight || canvas.offsetHeight || 150;
+    overlay.width = W * dpr; overlay.height = H * dpr;
+    overlay.style.width = W + 'px'; overlay.style.height = H + 'px';
     const cx = overlay.getContext('2d'); cx.scale(dpr, dpr);
-    cx.clearRect(0,0,W,H);
+    cx.clearRect(0, 0, W, H);
     if (idx < 0 || idx >= nights.length) return;
-    const pad = {l:36,r:10,t:10,b:26};
-    const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
+
+    const PAD = {l:36, r:10, t:10, b:26};
+    const cw = W - PAD.l - PAD.r, ch = H - PAD.t - PAD.b;
     const barW = (cw - (nights.length-1)*3) / nights.length;
-    const x = pad.l + idx*(barW+3);
-    cx.fillStyle = 'rgba(255,255,255,0.07)';
-    cx.fillRect(x, pad.t, barW, ch);
+    const barX = PAD.l + idx*(barW+3);
+
+    // Hovered bar highlight
+    cx.fillStyle = 'rgba(255,255,255,0.08)';
+    rrect(cx, barX-1, PAD.t, barW+2, ch, 3);
+    cx.fill();
+
+    const n = nights[idx];
+    const sleepH = (n.deep||0) + (n.rem||0) + (n.light||0);
+    const totalH  = sleepH + (n.awake||0);
+
+    // ── Card ─────────────────────────────────────────────────────────────────
+    const CW = 200, CH = 90;
+    // Flip left/right based on which side has more room
+    const barCx = barX + barW / 2;
+    let cx0 = barCx > W / 2 ? barX - CW - 6 : barX + barW + 6;
+    cx0 = Math.max(4, Math.min(cx0, W - CW - 4));
+    const cy0 = PAD.t + Math.max(0, (ch - CH) / 2);  // centred in chart area
+
+    // Background
+    cx.fillStyle = 'rgba(10,10,22,0.95)';
+    rrect(cx, cx0, cy0, CW, CH, 9); cx.fill();
+    cx.strokeStyle = 'rgba(255,255,255,0.08)'; cx.lineWidth = 1;
+    rrect(cx, cx0, cy0, CW, CH, 9); cx.stroke();
+
+    // Date
+    cx.fillStyle = 'rgba(255,255,255,0.4)';
+    cx.font = '10px -apple-system,sans-serif';
+    cx.textAlign = 'left'; cx.textBaseline = 'top';
+    cx.fillText(fmtDateLong(n.date), cx0+11, cy0+9);
+
+    // Total sleep
+    cx.fillStyle = '#fff';
+    cx.font = 'bold 16px -apple-system,sans-serif';
+    cx.fillText(hm(sleepH), cx0+11, cy0+22);
+
+    // ── Proportional stage bar ────────────────────────────────────────────────
+    const SBX = cx0+11, SBY = cy0+46, SBW = CW-22, SBH = 8;
+    cx.save();
+    rrect(cx, SBX, SBY, SBW, SBH, 4); cx.clip();
+    let sx = SBX;
+    STAGES.forEach(s => {
+      const val = n[s.key] || 0;
+      if (!val || !totalH) return;
+      const sw = (val / totalH) * SBW;
+      if (sw < 0.5) return;
+      cx.fillStyle = s.color;
+      cx.fillRect(sx, SBY, sw, SBH);
+      sx += sw;
+    });
+    cx.restore();
+
+    // ── Stage breakdown 2-column grid ─────────────────────────────────────────
+    const COL2 = cx0 + 11 + (CW - 22) / 2 + 4;
+    STAGES.forEach((s, i) => {
+      const col = i % 2, row = Math.floor(i / 2);
+      const gx = col === 0 ? cx0+11 : COL2;
+      const gy = cy0+60 + row*16;
+      const val = n[s.key] || 0;
+
+      // Coloured dot
+      cx.fillStyle = s.color;
+      cx.beginPath(); cx.arc(gx+4, gy+5, 3, 0, Math.PI*2); cx.fill();
+
+      // Stage name
+      cx.fillStyle = 'rgba(255,255,255,0.38)';
+      cx.font = '10px -apple-system,sans-serif';
+      cx.textAlign = 'left'; cx.textBaseline = 'top';
+      cx.fillText(s.label, gx+12, gy);
+
+      // Duration (right-aligned to its column)
+      cx.fillStyle = '#fff';
+      cx.font = 'bold 10px -apple-system,sans-serif';
+      cx.textAlign = 'right';
+      const rightEdge = col === 0 ? COL2 - 6 : cx0 + CW - 11;
+      cx.fillText(val > 0 ? hm(val) : '—', rightEdge, gy);
+    });
   }
 
-  wrap.addEventListener('mousemove', e=>{
+  // Suppress DOM tooltip while hovering over the sleep chart
+  const domTT = $('tt');
+  wrap.addEventListener('mousemove', e => {
+    if (domTT) domTT.style.display = 'none';
     const idx = getIdx(e);
-    if (idx < 0 || idx >= nights.length) {
-      tt.style.display='none'; if(lastIdx!==idx){drawHighlight(-1);lastIdx=idx;} return;
-    }
-    if (idx !== lastIdx) { drawHighlight(idx); lastIdx = idx; }
-    const n = nights[idx];
-    const total = (n.deep||0)+(n.rem||0)+(n.light||0);
-    const h = v => v>0 ? v.toFixed(1)+'h' : '—';
-    ttDate.textContent = fmtDateLong(n.date);
-    ttVal.textContent = h(total) + ' sleep';
-    ttSub.innerHTML =
-      `<span style="color:#5e5ce6">● Deep&nbsp;&nbsp;${h(n.deep||0)}</span><br>`+
-      `<span style="color:#bf5af2">● REM&nbsp;&nbsp;&nbsp;${h(n.rem||0)}</span><br>`+
-      `<span style="color:#32ade6">● Light&nbsp;&nbsp;${h(n.light||0)}</span><br>`+
-      `<span style="color:rgba(255,149,0,.9)">● Awake&nbsp;${h(n.awake||0)}</span>`;
-    tt.style.display='block';
-    tt.style.left=(e.clientX+14)+'px';
-    tt.style.top=Math.max(10,e.clientY-100)+'px';
+    if (idx < 0 || idx >= nights.length) { draw(-1); lastIdx = -1; return; }
+    if (idx !== lastIdx) { draw(idx); lastIdx = idx; }
   });
-  wrap.addEventListener('mouseleave', ()=>{ tt.style.display='none'; drawHighlight(-1); lastIdx=-1; });
+  wrap.addEventListener('mouseleave', () => { draw(-1); lastIdx = -1; });
 }
 
 async function loadSleep() {
