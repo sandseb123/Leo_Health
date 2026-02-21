@@ -87,6 +87,28 @@ Leo detects it within 10 seconds, parses it automatically, and sends you a macOS
 
 ---
 
+## Linux Support
+
+Leo Core runs on Linux too. AirDrop isn't available, but there are easy alternatives for getting your iPhone export to a Linux machine:
+
+**Transfer via LocalSend (recommended — wireless, no account needed):**
+1. Install [LocalSend](https://localsend.org) on both your iPhone and Linux machine
+2. Open Health app → tap your profile picture → **Export All Health Data**
+3. Share → LocalSend → select your Linux machine
+4. File lands in `~/Downloads/` automatically
+5. `leo-watch` detects it within 10 seconds
+
+**Transfer via email or Google Drive:**
+1. Open Health app → tap your profile picture → **Export All Health Data**
+2. Share → Mail or Google Drive → download to `~/Downloads/` on your Linux machine
+3. `leo-watch` picks it up automatically
+
+**Whoop on Linux:** same as Mac — export CSVs are emailed to you, download them to `~/Downloads/`
+
+**Oura on Linux:** go to [oura.com](https://oura.com) → Account → Data Export → download directly in your browser
+
+---
+
 ## Auto-Ingest via AirDrop ✨
 
 Leo watches your Downloads folder and automatically parses any health export the moment it arrives — no commands needed after setup.
