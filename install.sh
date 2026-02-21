@@ -53,20 +53,18 @@ else
   echo "alias leo-dash=\"python3 -m leo_health.dashboard\"" >> "$SHELL_CONFIG"
 fi
 
-# Source the config (fish handles this differently)
-if [ "$SHELL_NAME" != "fish" ]; then
-  # shellcheck disable=SC1090
-  source "$SHELL_CONFIG" 2>/dev/null || true
-fi
-
-echo "✓ Installed! Commands now available:"
+echo "✓ Installed! Run this to activate the commands in your current terminal:"
+echo ""
+echo "  source $SHELL_CONFIG"
+echo ""
+echo "Or just open a new terminal tab. Then you'll have:"
 echo ""
 echo "  leo          → print health stats in the terminal"
 echo "  leo-watch    → watch Downloads folder for new exports"
 echo "  leo-dash     → open the web dashboard in your browser"
 echo ""
 if [ "$SHELL_NAME" = "fish" ]; then
-  echo "Restart your terminal or run: source $SHELL_CONFIG"
+  echo "  (fish: restart your terminal or run: source $SHELL_CONFIG)"
 else
   OS="$(uname -s)"
   if [ "$OS" = "Darwin" ]; then
