@@ -1300,7 +1300,7 @@ function toggleWo(el, idx) {
   }
 }
 
-// ── Workout HR mini-chart ──────────────────────────────────────────────────────
+// ── Workout HR mini-chart (with hover) ────────────────────────────────────────
 function drawWoHR(canvasId, data) {
   const c = $(canvasId);
   if (!c) return;
@@ -1314,87 +1314,189 @@ function drawWoHR(canvasId, data) {
   const vals = data.map(d => +d.value).filter(v => !isNaN(v));
   if (vals.length < 2) return;
   const rawMax = Math.max(...vals);
-  // Estimate theoretical max HR (assume workout peaked at ~90% of true max)
   const maxRef = Math.round(Math.max(rawMax * 1.12, rawMax + 15));
   const mn = Math.min(Math.min(...vals) * 0.97, maxRef * 0.45);
   const mx = maxRef * 1.03;
   const rng = mx - mn || 1;
   const pad = {t:8, r:8, b:18, l:36};
   const cw = w - pad.l - pad.r, ch = h - pad.t - pad.b;
+  const avgV = Math.round(vals.reduce((s,v)=>s+v,0)/vals.length);
+  const maxV = Math.round(rawMax);
 
-  cx.clearRect(0, 0, w, h);
-
-  // Zone background bands
-  const ZONE_BANDS = [
-    { lo:0,    hi:0.50, color:'#5ac8fa' },
-    { lo:0.50, hi:0.60, color:'#30d158' },
-    { lo:0.60, hi:0.70, color:'#ffd60a' },
-    { lo:0.70, hi:0.85, color:'#ff9f0a' },
-    { lo:0.85, hi:1.00, color:'#ff375f' },
+  const ZONES = [
+    { lo:0,    hi:0.50, color:'#5ac8fa', name:'Easy' },
+    { lo:0.50, hi:0.60, color:'#30d158', name:'Fat Burn' },
+    { lo:0.60, hi:0.70, color:'#ffd60a', name:'Aerobic' },
+    { lo:0.70, hi:0.85, color:'#ff9f0a', name:'Tempo' },
+    { lo:0.85, hi:1.01, color:'#ff375f', name:'Peak' },
   ];
-  ZONE_BANDS.forEach(z => {
-    const yTop = pad.t + ch - Math.min(1, Math.max(0, (z.hi * maxRef - mn) / rng)) * ch;
-    const yBot = pad.t + ch - Math.min(1, Math.max(0, (z.lo * maxRef - mn) / rng)) * ch;
-    if (yBot > yTop) {
-      cx.fillStyle = z.color + '1a';
-      cx.fillRect(pad.l, yTop, cw, yBot - yTop);
-    }
-  });
-
-  // Grid lines
-  cx.strokeStyle = 'rgba(255,255,255,0.05)'; cx.lineWidth = 1;
-  [0, 0.33, 0.67, 1].forEach(f => {
-    const y = pad.t + ch * f;
-    cx.beginPath(); cx.moveTo(pad.l, y); cx.lineTo(w-pad.r, y); cx.stroke();
-    cx.fillStyle = 'rgba(255,255,255,0.28)'; cx.font = '9px -apple-system,sans-serif';
-    cx.textAlign = 'right'; cx.textBaseline = 'middle';
-    cx.fillText(Math.round(mx - rng*f), pad.l-4, y);
-  });
+  const getZone = bpm => ZONES.find(z => (bpm/maxRef) >= z.lo && (bpm/maxRef) < z.hi) || ZONES[4];
 
   const pts = data.map((d, i) => ({
     x: pad.l + (i / Math.max(data.length-1, 1)) * cw,
     y: pad.t + ch - ((+d.value - mn) / rng) * ch,
+    v: +d.value,
+    t: d.time,
   }));
 
-  // Fill
-  const grad = cx.createLinearGradient(0, pad.t, 0, pad.t+ch);
-  grad.addColorStop(0, C.hr+'40'); grad.addColorStop(1, C.hr+'04');
-  cx.beginPath();
-  cx.moveTo(pts[0].x, pts[0].y);
-  for (let i=1; i<pts.length; i++) {
-    const cpx = (pts[i-1].x + pts[i].x) / 2;
-    cx.bezierCurveTo(cpx, pts[i-1].y, cpx, pts[i].y, pts[i].x, pts[i].y);
+  function rrect(x, y, rw, rh, r) {
+    cx.beginPath();
+    cx.moveTo(x+r, y);
+    cx.lineTo(x+rw-r, y); cx.quadraticCurveTo(x+rw, y, x+rw, y+r);
+    cx.lineTo(x+rw, y+rh-r); cx.quadraticCurveTo(x+rw, y+rh, x+rw-r, y+rh);
+    cx.lineTo(x+r, y+rh); cx.quadraticCurveTo(x, y+rh, x, y+rh-r);
+    cx.lineTo(x, y+r); cx.quadraticCurveTo(x, y, x+r, y);
+    cx.closePath();
   }
-  cx.lineTo(pts[pts.length-1].x, pad.t+ch);
-  cx.lineTo(pts[0].x, pad.t+ch);
-  cx.closePath();
-  cx.fillStyle = grad; cx.fill();
 
-  // Line
-  cx.beginPath();
-  cx.moveTo(pts[0].x, pts[0].y);
-  for (let i=1; i<pts.length; i++) {
-    const cpx = (pts[i-1].x + pts[i].x) / 2;
-    cx.bezierCurveTo(cpx, pts[i-1].y, cpx, pts[i].y, pts[i].x, pts[i].y);
+  function drawBase() {
+    cx.clearRect(0, 0, w, h);
+
+    // Zone bands
+    ZONES.forEach(z => {
+      const yTop = pad.t + ch - Math.min(1, Math.max(0, (z.hi * maxRef - mn) / rng)) * ch;
+      const yBot = pad.t + ch - Math.min(1, Math.max(0, (z.lo * maxRef - mn) / rng)) * ch;
+      if (yBot > yTop) { cx.fillStyle = z.color+'1a'; cx.fillRect(pad.l, yTop, cw, yBot-yTop); }
+    });
+
+    // Grid
+    cx.lineWidth = 1;
+    [0, 0.33, 0.67, 1].forEach(f => {
+      const y = pad.t + ch * f;
+      cx.beginPath(); cx.moveTo(pad.l, y); cx.lineTo(w-pad.r, y);
+      cx.strokeStyle = 'rgba(255,255,255,0.05)'; cx.stroke();
+      cx.fillStyle = 'rgba(255,255,255,0.28)'; cx.font = '9px -apple-system,sans-serif';
+      cx.textAlign = 'right'; cx.textBaseline = 'middle';
+      cx.fillText(Math.round(mx - rng*f), pad.l-4, y);
+    });
+
+    // Fill
+    const grad = cx.createLinearGradient(0, pad.t, 0, pad.t+ch);
+    grad.addColorStop(0, C.hr+'40'); grad.addColorStop(1, C.hr+'04');
+    cx.beginPath(); cx.moveTo(pts[0].x, pts[0].y);
+    for (let i=1; i<pts.length; i++) {
+      const cpx = (pts[i-1].x+pts[i].x)/2;
+      cx.bezierCurveTo(cpx, pts[i-1].y, cpx, pts[i].y, pts[i].x, pts[i].y);
+    }
+    cx.lineTo(pts[pts.length-1].x, pad.t+ch); cx.lineTo(pts[0].x, pad.t+ch);
+    cx.closePath(); cx.fillStyle = grad; cx.fill();
+
+    // Line
+    cx.beginPath(); cx.moveTo(pts[0].x, pts[0].y);
+    for (let i=1; i<pts.length; i++) {
+      const cpx = (pts[i-1].x+pts[i].x)/2;
+      cx.bezierCurveTo(cpx, pts[i-1].y, cpx, pts[i].y, pts[i].x, pts[i].y);
+    }
+    cx.strokeStyle = C.hr; cx.lineWidth = 1.5; cx.lineJoin = 'round'; cx.stroke();
+
+    // Avg dashed line
+    const avgY = pad.t + ch - ((avgV - mn) / rng) * ch;
+    cx.beginPath(); cx.moveTo(pad.l, avgY); cx.lineTo(w-pad.r, avgY);
+    cx.strokeStyle = 'rgba(255,255,255,0.18)'; cx.lineWidth = 1;
+    cx.setLineDash([3,4]); cx.stroke(); cx.setLineDash([]);
+
+    // Max marker
+    const maxY = pad.t + ch - ((maxV - mn) / rng) * ch;
+    cx.fillStyle = C.hr; cx.font = 'bold 9px -apple-system,sans-serif';
+    cx.textAlign = 'left'; cx.textBaseline = 'bottom';
+    cx.fillText(`▲ ${maxV}`, pad.l+2, maxY-1);
+
+    // Avg label
+    cx.fillStyle = 'rgba(255,255,255,0.35)'; cx.font = '9px -apple-system,sans-serif';
+    cx.textAlign = 'right'; cx.textBaseline = 'alphabetic';
+    cx.fillText(`avg ${avgV} bpm`, w-pad.r, h-2);
   }
-  cx.strokeStyle = C.hr; cx.lineWidth = 1.5; cx.lineJoin = 'round'; cx.stroke();
 
-  // Avg line
-  const avgV = Math.round(vals.reduce((s,v)=>s+v,0)/vals.length);
-  const maxV = Math.round(rawMax);
-  const avgY = pad.t + ch - ((avgV - mn) / rng) * ch;
-  cx.beginPath(); cx.moveTo(pad.l, avgY); cx.lineTo(w-pad.r, avgY);
-  cx.strokeStyle = 'rgba(255,255,255,0.18)'; cx.lineWidth = 1;
-  cx.setLineDash([3, 4]); cx.stroke(); cx.setLineDash([]);
-  // Max HR marker
-  const maxY = pad.t + ch - ((maxV - mn) / rng) * ch;
-  cx.fillStyle = C.hr; cx.font = 'bold 9px -apple-system,sans-serif';
-  cx.textAlign = 'left'; cx.textBaseline = 'bottom';
-  cx.fillText(`▲ ${maxV}`, pad.l+2, maxY-1);
-  // Avg label
-  cx.fillStyle = 'rgba(255,255,255,0.35)'; cx.font = '9px -apple-system,sans-serif';
-  cx.textAlign = 'right'; cx.textBaseline = 'alphabetic';
-  cx.fillText(`avg ${avgV} bpm`, w-pad.r, h-2);
+  function drawHover(mouseX) {
+    // Nearest point
+    const idx = pts.reduce((b, p, i) =>
+      Math.abs(p.x - mouseX) < Math.abs(pts[b].x - mouseX) ? i : b, 0);
+    const pt = pts[idx];
+    const zone = getZone(pt.v);
+
+    // Vertical crosshair
+    cx.beginPath(); cx.moveTo(pt.x, pad.t); cx.lineTo(pt.x, pad.t+ch);
+    cx.strokeStyle = 'rgba(255,255,255,0.22)'; cx.lineWidth = 1;
+    cx.setLineDash([2,3]); cx.stroke(); cx.setLineDash([]);
+
+    // Horizontal crosshair
+    cx.beginPath(); cx.moveTo(pad.l, pt.y); cx.lineTo(w-pad.r, pt.y);
+    cx.strokeStyle = 'rgba(255,255,255,0.1)'; cx.lineWidth = 1;
+    cx.setLineDash([2,3]); cx.stroke(); cx.setLineDash([]);
+
+    // Outer glow ring
+    cx.beginPath(); cx.arc(pt.x, pt.y, 6, 0, Math.PI*2);
+    cx.fillStyle = zone.color+'44'; cx.fill();
+    // Coloured dot
+    cx.beginPath(); cx.arc(pt.x, pt.y, 4, 0, Math.PI*2);
+    cx.fillStyle = zone.color; cx.fill();
+    // White centre
+    cx.beginPath(); cx.arc(pt.x, pt.y, 2, 0, Math.PI*2);
+    cx.fillStyle = '#fff'; cx.fill();
+
+    // Elapsed time
+    let elapsed = '';
+    if (pt.t && pts[0].t) {
+      const ms = new Date(pt.t) - new Date(pts[0].t);
+      const m = Math.floor(ms/60000), s = Math.floor((ms%60000)/1000);
+      elapsed = `+${m}:${String(s).padStart(2,'0')}`;
+    }
+
+    // Tooltip dimensions
+    const bpmStr = `${Math.round(pt.v)} bpm`;
+    cx.font = 'bold 13px -apple-system,sans-serif';
+    const bpmW = cx.measureText(bpmStr).width;
+    cx.font = '10px -apple-system,sans-serif';
+    const subW = cx.measureText(zone.name).width + (elapsed ? cx.measureText(elapsed).width + 14 : 0);
+    const tipW = Math.max(bpmW, subW) + 20;
+    const tipH = 40;
+
+    let tx = pt.x - tipW/2;
+    if (tx < pad.l) tx = pad.l;
+    if (tx + tipW > w - 4) tx = w - 4 - tipW;
+    const ty = pt.y - tipH - 12 < pad.t ? pt.y + 10 : pt.y - tipH - 12;
+
+    // Bubble background
+    cx.fillStyle = 'rgba(12,12,22,0.93)';
+    rrect(tx, ty, tipW, tipH, 7); cx.fill();
+    cx.strokeStyle = zone.color+'55'; cx.lineWidth = 1;
+    rrect(tx, ty, tipW, tipH, 7); cx.stroke();
+
+    // BPM
+    cx.fillStyle = zone.color;
+    cx.font = 'bold 13px -apple-system,sans-serif';
+    cx.textAlign = 'left'; cx.textBaseline = 'top';
+    cx.fillText(bpmStr, tx+10, ty+7);
+
+    // Zone name + elapsed
+    cx.fillStyle = 'rgba(240,240,248,0.45)';
+    cx.font = '10px -apple-system,sans-serif';
+    cx.textAlign = 'left'; cx.textBaseline = 'top';
+    cx.fillText(zone.name, tx+10, ty+23);
+    if (elapsed) {
+      cx.textAlign = 'right';
+      cx.fillText(elapsed, tx+tipW-10, ty+23);
+    }
+  }
+
+  drawBase();
+
+  // Attach hover listeners (clean up previous if canvas reused)
+  if (c._hrMove) c.removeEventListener('mousemove', c._hrMove);
+  if (c._hrLeave) c.removeEventListener('mouseleave', c._hrLeave);
+
+  c._hrMove = e => {
+    const rect = c.getBoundingClientRect();
+    const mouseX = (e.clientX - rect.left) * (w / rect.width);
+    if (mouseX < pad.l || mouseX > w-pad.r) { drawBase(); return; }
+    drawBase();
+    drawHover(mouseX);
+  };
+  c._hrLeave = () => drawBase();
+
+  c.addEventListener('mousemove', c._hrMove);
+  c.addEventListener('mouseleave', c._hrLeave);
+  c.style.cursor = 'crosshair';
 }
 
 // ── Workout GPS route SVG ─────────────────────────────────────────────────────
