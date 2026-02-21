@@ -490,11 +490,14 @@ def api_debug_sleep():
 
 
 def api_workout_hr(start, end):
-    """Heart rate samples recorded during a workout window."""
+    """Heart rate samples recorded during a workout window.
+    Uses datetime() for timezone-safe comparison (handles -05:00 vs Z offsets)."""
     return _q("""
         SELECT recorded_at AS time, ROUND(value,0) AS value
         FROM heart_rate
-        WHERE metric='heart_rate' AND recorded_at>=? AND recorded_at<=?
+        WHERE metric='heart_rate'
+          AND datetime(recorded_at) >= datetime(?)
+          AND datetime(recorded_at) <= datetime(?)
         ORDER BY recorded_at LIMIT 500
     """, (start, end))
 
@@ -504,7 +507,7 @@ def api_workout_route(start):
     return _q("""
         SELECT latitude AS lat, longitude AS lon, altitude_m AS alt, timestamp AS time
         FROM workout_routes
-        WHERE workout_start=?
+        WHERE datetime(workout_start) = datetime(?)
         ORDER BY timestamp LIMIT 5000
     """, (start,))
 
@@ -546,6 +549,7 @@ def api_temperature(days=30):
 def api_workouts(days=30):
     return _q("""
         SELECT recorded_at,
+               end,
                date(recorded_at)               AS date,
                time(recorded_at)               AS time,
                activity,
@@ -1476,7 +1480,7 @@ async function loadWoDetail(el, idx) {
     `/api/workout-hr?start=${encodeURIComponent(start)}&end=${encodeURIComponent(endParam)}`
   );
   const hrWrap = $(`woHrWrap${idx}`);
-  if (hrData && hrData.length >= 4) {
+  if (hrData && hrData.length >= 2) {
     drawWoHR(`woHrC${idx}`, hrData);
     const vals = hrData.map(d => +d.value).filter(v => !isNaN(v));
     const avgHR = Math.round(vals.reduce((s,v)=>s+v,0)/vals.length);
@@ -1489,7 +1493,7 @@ async function loadWoDetail(el, idx) {
       `<div class="wo-stat-val" style="color:var(--hr)">${maxHR}</div><div class="wo-stat-lbl">Max HR (bpm)</div>`;
     renderHRZones($(`woZones${idx}`), vals, maxHR);
   } else if (hrWrap) {
-    hrWrap.style.display = 'none';
+    hrWrap.innerHTML = '<div style="font-size:11px;color:var(--muted);padding:8px 0">No HR samples in Apple Health for this workout</div>';
   }
 
   const ROUTE_ACTS = new Set(['running','cycling','walking','hiking','skiing','snowboarding']);
