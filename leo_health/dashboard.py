@@ -538,6 +538,7 @@ def api_workouts(days=30):
                ) AS max_hr
         FROM workouts w
         WHERE w.recorded_at >= ?
+        GROUP BY w.recorded_at, w.activity, w.source
         ORDER BY w.recorded_at DESC
         LIMIT 60
     """, (_since(days),))
