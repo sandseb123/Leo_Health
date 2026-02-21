@@ -4,9 +4,11 @@ Parses export.zip from Apple Health into normalized dicts.
 ZERO network imports. Stdlib only.
 """
 
-import zipfile
+import re
+import xml.etree.ElementTree as ET
 import xml.sax
 import xml.sax.handler
+import zipfile
 from datetime import datetime
 from typing import Generator
 
@@ -42,6 +44,11 @@ class _HealthHandler(xml.sax.handler.ContentHandler):
     }
     HRV_TYPES = {
         "HKQuantityTypeIdentifierHeartRateVariabilitySDNN": "hrv_sdnn",
+    }
+    # Stored in heart_rate table as distinct metrics
+    VITAL_TYPES = {
+        "HKQuantityTypeIdentifierOxygenSaturation": "blood_oxygen_spo2",
+        "HKQuantityTypeIdentifierRespiratoryRate":  "respiratory_rate",
     }
     SLEEP_VALUES = {
         "HKCategoryValueSleepAnalysisAsleep": "asleep",
@@ -100,6 +107,22 @@ class _HealthHandler(xml.sax.handler.ContentHandler):
                 "device": attrs.get("sourceName", ""),
             })
 
+        # Blood oxygen + respiration rate (stored in heart_rate table)
+        elif rtype in self.VITAL_TYPES:
+            raw = float(attrs.get("value", 0))
+            metric = self.VITAL_TYPES[rtype]
+            # Apple exports SpO2 as a fraction (0.0–1.0) with unit "%"; convert to pct
+            if metric == "blood_oxygen_spo2" and raw <= 1.0:
+                raw = round(raw * 100, 2)
+            self.heart_rate.append({
+                "source": "apple_health",
+                "metric": metric,
+                "value": raw,
+                "unit": attrs.get("unit", ""),
+                "recorded_at": _iso(attrs.get("startDate", "")),
+                "device": attrs.get("sourceName", ""),
+            })
+
         # Sleep
         elif rtype == "HKCategoryTypeIdentifierSleepAnalysis":
             stage_raw = attrs.get("value", "")
@@ -132,6 +155,49 @@ class _HealthHandler(xml.sax.handler.ContentHandler):
         })
 
 
+# ── GPX route parser ──────────────────────────────────────────────────────────
+
+_GPX_NS = {"gpx": "http://www.topografix.com/GPX/1/1"}
+
+
+def _parse_gpx(content: bytes, workout_start: str) -> list[dict]:
+    """Parse a single GPX file and return a list of route point dicts."""
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError:
+        return []
+
+    points = []
+    for trkpt in root.findall(".//gpx:trkpt", _GPX_NS):
+        try:
+            lat = float(trkpt.get("lat", 0))
+            lon = float(trkpt.get("lon", 0))
+        except (TypeError, ValueError):
+            continue
+        ele_el  = trkpt.find("gpx:ele",  _GPX_NS)
+        time_el = trkpt.find("gpx:time", _GPX_NS)
+        points.append({
+            "workout_start": workout_start,
+            "timestamp":     time_el.text.strip() if time_el is not None else workout_start,
+            "latitude":      lat,
+            "longitude":     lon,
+            "altitude_m":    float(ele_el.text) if ele_el is not None else None,
+        })
+    return points
+
+
+def _gpx_workout_start(gpx_path: str) -> str:
+    """
+    Extract a workout start timestamp from a GPX filename.
+    Apple Health names them:  route_2024-01-15_14-30-45.gpx
+    Falls back to empty string if the pattern doesn't match.
+    """
+    m = re.search(r"route_(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})", gpx_path)
+    if m:
+        return f"{m.group(1)}T{m.group(2).replace('-', ':')}"
+    return ""
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def parse(zip_path: str) -> dict:
@@ -151,6 +217,7 @@ def parse(zip_path: str) -> dict:
     """
     handler = _HealthHandler()
 
+    routes = []
     with zipfile.ZipFile(zip_path, "r") as zf:
         # Apple Health zip contains apple_health_export/export.xml
         xml_candidates = [n for n in zf.namelist() if n.endswith("export.xml")]
@@ -161,11 +228,19 @@ def parse(zip_path: str) -> dict:
         with zf.open(xml_path) as xml_file:
             xml.sax.parse(xml_file, handler)
 
+        # Parse GPS workout routes (workout-routes/*.gpx inside the ZIP)
+        gpx_files = [n for n in zf.namelist() if n.endswith(".gpx")]
+        for gpx_path in gpx_files:
+            workout_start = _gpx_workout_start(gpx_path)
+            with zf.open(gpx_path) as gpx_file:
+                routes.extend(_parse_gpx(gpx_file.read(), workout_start))
+
     return {
         "heart_rate": handler.heart_rate,
         "hrv": handler.hrv,
         "sleep": handler.sleep,
         "workouts": handler.workouts,
+        "routes": routes,
     }
 
 

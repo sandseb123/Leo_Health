@@ -100,6 +100,32 @@ CREATE TABLE IF NOT EXISTS whoop_strain (
     created_at      TEXT DEFAULT (datetime('now'))
 );
 
+-- Oura Ring readiness scores
+CREATE TABLE IF NOT EXISTS oura_readiness (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    source                  TEXT NOT NULL DEFAULT 'oura',
+    recorded_at             TEXT NOT NULL,
+    readiness_score         REAL,               -- 0–100
+    hrv_balance             REAL,               -- ms RMSSD (relative to 3-month baseline)
+    resting_heart_rate      REAL,               -- BPM
+    temperature_deviation   REAL,               -- degrees C from personal baseline
+    recovery_index          REAL,               -- 0–100
+    activity_balance        REAL,               -- 0–100
+    sleep_balance           REAL,               -- 0–100
+    created_at              TEXT DEFAULT (datetime('now'))
+);
+
+-- GPS route points extracted from Apple Health workout-routes/*.gpx files
+CREATE TABLE IF NOT EXISTS workout_routes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    workout_start   TEXT NOT NULL,  -- matches workouts.recorded_at (for joining)
+    timestamp       TEXT NOT NULL,  -- GPS fix time (ISO8601)
+    latitude        REAL NOT NULL,
+    longitude       REAL NOT NULL,
+    altitude_m      REAL,
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+
 -- Indexes for common query patterns
 CREATE INDEX IF NOT EXISTS idx_heart_rate_recorded_at ON heart_rate(recorded_at);
 CREATE INDEX IF NOT EXISTS idx_hrv_recorded_at ON hrv(recorded_at);
@@ -107,8 +133,10 @@ CREATE INDEX IF NOT EXISTS idx_sleep_recorded_at ON sleep(recorded_at);
 CREATE INDEX IF NOT EXISTS idx_workouts_recorded_at ON workouts(recorded_at);
 CREATE INDEX IF NOT EXISTS idx_whoop_recovery_recorded_at ON whoop_recovery(recorded_at);
 CREATE INDEX IF NOT EXISTS idx_whoop_strain_recorded_at ON whoop_strain(recorded_at);
+CREATE INDEX IF NOT EXISTS idx_oura_readiness_recorded_at ON oura_readiness(recorded_at);
 CREATE INDEX IF NOT EXISTS idx_heart_rate_source ON heart_rate(source);
 CREATE INDEX IF NOT EXISTS idx_hrv_source ON hrv(source);
+CREATE INDEX IF NOT EXISTS idx_workout_routes_start ON workout_routes(workout_start);
 """
 
 
@@ -132,6 +160,40 @@ def get_connection(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     return conn
 
 
+def _migrate_sleep_dedup(conn: sqlite3.Connection) -> None:
+    """
+    One-time idempotent migration:
+      1. Delete duplicate sleep rows, keeping the earliest id per unique segment.
+      2. Create a unique index so INSERT OR IGNORE prevents future duplicates.
+
+    Root cause: without a UNIQUE constraint, every re-import of an Apple Health
+    export creates additional copies of every sleep stage record, inflating totals
+    (e.g. 3 imports × 3h core = 9h displayed light sleep).
+    """
+    conn.execute("""
+        DELETE FROM sleep
+        WHERE id NOT IN (
+            SELECT MIN(id)
+            FROM sleep
+            GROUP BY source,
+                     COALESCE(stage,   ''),
+                     COALESCE(start,   ''),
+                     COALESCE(end,     ''),
+                     COALESCE(device,  '')
+        )
+    """)
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_sleep_unique
+        ON sleep (
+            source,
+            COALESCE(stage,  ''),
+            COALESCE(start,  ''),
+            COALESCE(end,    ''),
+            COALESCE(device, '')
+        )
+    """)
+
+
 def create_schema(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     """
     Create the Leo Health database schema.
@@ -145,6 +207,7 @@ def create_schema(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     """
     conn = get_connection(db_path)
     conn.executescript(SCHEMA)
+    _migrate_sleep_dedup(conn)
     conn.commit()
     return conn
 
@@ -154,7 +217,7 @@ def get_stats(db_path: str = DEFAULT_DB_PATH) -> dict:
     Return row counts for all tables — used by the CLI status command.
     """
     conn = get_connection(db_path)
-    tables = ["heart_rate", "hrv", "sleep", "workouts", "whoop_recovery", "whoop_strain"]
+    tables = ["heart_rate", "hrv", "sleep", "workouts", "whoop_recovery", "whoop_strain", "oura_readiness"]
     stats = {}
     for table in tables:
         try:

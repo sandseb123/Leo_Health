@@ -137,6 +137,7 @@ def _parse_sleep_row(row: dict) -> Optional[dict]:
 
     return {
         "source": "whoop",
+        "stage": "asleep",
         "recorded_at": _iso(date),
         "sleep_performance_pct": (_float(norm.get("sleep_performance_pct", "")) or
                                    _float(norm.get("sleep_performance", ""))),

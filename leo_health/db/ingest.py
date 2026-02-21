@@ -47,10 +47,11 @@ def ingest_apple_health(data: dict, db_path: str = DEFAULT_DB_PATH) -> dict:
     counts = {}
 
     try:
-        counts["heart_rate"] = _insert_many(conn, "heart_rate", data.get("heart_rate", []))
-        counts["hrv"] = _insert_many(conn, "hrv", data.get("hrv", []))
-        counts["sleep"] = _insert_many(conn, "sleep", data.get("sleep", []))
-        counts["workouts"] = _insert_many(conn, "workouts", data.get("workouts", []))
+        counts["heart_rate"]     = _insert_many(conn, "heart_rate",     data.get("heart_rate", []))
+        counts["hrv"]            = _insert_many(conn, "hrv",            data.get("hrv", []))
+        counts["sleep"]          = _insert_many(conn, "sleep",          data.get("sleep", []))
+        counts["workouts"]       = _insert_many(conn, "workouts",       data.get("workouts", []))
+        counts["workout_routes"] = _insert_many(conn, "workout_routes", data.get("routes", []))
         conn.commit()
     finally:
         conn.close()
@@ -89,12 +90,71 @@ def ingest_whoop(data: dict, db_path: str = DEFAULT_DB_PATH) -> dict:
     return counts
 
 
+# ── Fitbit ingest ─────────────────────────────────────────────────────────────
+
+def ingest_fitbit(data: dict, db_path: str = DEFAULT_DB_PATH) -> dict:
+    """
+    Write parsed Fitbit data to the database.
+
+    Args:
+        data: Output from fitbit.parse()
+        db_path: Path to SQLite database
+
+    Returns:
+        Dict with counts of inserted rows per table
+    """
+    conn = create_schema(db_path)
+    counts = {}
+
+    try:
+        counts["heart_rate"] = _insert_many(conn, "heart_rate", data.get("heart_rate", []))
+        counts["hrv"] = _insert_many(conn, "hrv", data.get("hrv", []))
+        counts["sleep"] = _insert_many(conn, "sleep", data.get("sleep", []))
+        counts["workouts"] = _insert_many(conn, "workouts", data.get("workouts", []))
+        conn.commit()
+    finally:
+        conn.close()
+
+    return counts
+
+
+# ── Oura ingest ───────────────────────────────────────────────────────────────
+
+def ingest_oura(data: dict, db_path: str = DEFAULT_DB_PATH) -> dict:
+    """
+    Write parsed Oura Ring data to the database.
+
+    Args:
+        data: Output from oura.parse() or oura.parse_folder()
+        db_path: Path to SQLite database
+
+    Returns:
+        Dict with counts of inserted rows per table
+    """
+    conn = create_schema(db_path)
+    counts = {}
+
+    try:
+        counts["oura_readiness"] = _insert_many(conn, "oura_readiness", data.get("readiness", []))
+        counts["sleep"] = _insert_many(conn, "sleep", data.get("sleep", []))
+        counts["heart_rate"] = _insert_many(conn, "heart_rate", data.get("heart_rate", []))
+        counts["hrv"] = _insert_many(conn, "hrv", data.get("hrv", []))
+        conn.commit()
+    finally:
+        conn.close()
+
+    return counts
+
+
 # ── Combined ingest ───────────────────────────────────────────────────────────
 
 def ingest_all(
     apple_health_zip: Optional[str] = None,
     whoop_csv: Optional[str] = None,
     whoop_folder: Optional[str] = None,
+    fitbit_zip: Optional[str] = None,
+    oura_csv: Optional[str] = None,
+    oura_folder: Optional[str] = None,
     db_path: str = DEFAULT_DB_PATH,
 ) -> dict:
     """
@@ -104,19 +164,23 @@ def ingest_all(
         apple_health_zip: Path to Apple Health export.zip
         whoop_csv: Path to a single Whoop CSV file
         whoop_folder: Path to folder of Whoop CSV files
+        fitbit_zip: Path to Fitbit data export ZIP
+        oura_csv: Path to a single Oura CSV file (readiness, sleep, or activity)
+        oura_folder: Path to folder of Oura CSV files
         db_path: Path to SQLite database
 
     Returns:
-        Nested dict: { 'apple_health': {...counts}, 'whoop': {...counts} }
+        Nested dict: { 'apple_health': {...counts}, 'whoop': {...counts},
+                       'fitbit': {...counts}, 'oura': {...counts} }
 
     Example:
         >>> results = ingest_all(
         ...     apple_health_zip="~/Downloads/export.zip",
-        ...     whoop_folder="~/Downloads/whoop/"
+        ...     oura_folder="~/Downloads/oura/",
         ... )
         >>> print(results)
     """
-    from ..parsers import apple_health, whoop as whoop_parser
+    from ..parsers import apple_health, whoop as whoop_parser, fitbit as fitbit_parser, oura as oura_parser
 
     results = {}
 
@@ -141,6 +205,29 @@ def ingest_all(
         w_counts = ingest_whoop(w_data, db_path)
         results["whoop"] = w_counts
         total = sum(w_counts.values())
+        print(f"  ✓ {total:,} records ingested")
+
+    if fitbit_zip:
+        print(f"Parsing Fitbit export: {fitbit_zip}")
+        f_data = fitbit_parser.parse(fitbit_zip)
+        f_counts = ingest_fitbit(f_data, db_path)
+        results["fitbit"] = f_counts
+        total = sum(f_counts.values())
+        print(f"  ✓ {total:,} records ingested")
+
+    if oura_folder:
+        print(f"Parsing Oura exports from folder: {oura_folder}")
+        o_data = oura_parser.parse_folder(oura_folder)
+        o_counts = ingest_oura(o_data, db_path)
+        results["oura"] = o_counts
+        total = sum(o_counts.values())
+        print(f"  ✓ {total:,} records ingested")
+    elif oura_csv:
+        print(f"Parsing Oura CSV: {oura_csv}")
+        o_data = oura_parser.parse(oura_csv)
+        o_counts = ingest_oura(o_data, db_path)
+        results["oura"] = o_counts
+        total = sum(o_counts.values())
         print(f"  ✓ {total:,} records ingested")
 
     return results
