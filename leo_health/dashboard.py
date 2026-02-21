@@ -106,46 +106,68 @@ def _since(days):
 
 # ── API functions ─────────────────────────────────────────────────────────────
 
+def _sleep_avg(days):
+    """Return average total sleep hours using the properly interval-merged api_sleep()."""
+    rows = api_sleep(days)
+    if not rows:
+        return None
+    totals = [
+        (r.get("deep") or 0) + (r.get("rem") or 0) + (r.get("light") or 0)
+        for r in rows
+        if (r.get("deep") or 0) + (r.get("rem") or 0) + (r.get("light") or 0) > 0
+    ]
+    return round(sum(totals) / len(totals), 2) if totals else None
+
+
+def _spo2_avg(since):
+    """SpO2 average from Apple Health and/or Whoop (Apple overwrites if both present)."""
+    apple = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
+                "WHERE metric='blood_oxygen_spo2' AND recorded_at>=?", (since,))
+    whoop = _q1("SELECT ROUND(AVG(spo2_pct),1) AS v FROM whoop_recovery "
+                "WHERE spo2_pct IS NOT NULL AND recorded_at>=?", (since,))
+    return apple.get("v") or whoop.get("v")
+
+
+def _trend_pct(now_v, base_v):
+    """% change from baseline (30d avg) to recent (7d avg). Positive = recent is higher."""
+    try:
+        if now_v is None or base_v is None or base_v == 0:
+            return None
+        return round((float(now_v) - float(base_v)) / float(base_v) * 100, 1)
+    except Exception:
+        return None
+
+
 def api_summary():
-    s = _since(7)
+    s7  = _since(7)
+    s30 = _since(30)
 
-    rhr = _q1("SELECT ROUND(AVG(value),0) AS v FROM heart_rate "
-               "WHERE metric='resting_heart_rate' AND recorded_at >= ?", (s,))
+    # ── Current 7-day values ──────────────────────────────────────────────────
+    rhr  = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
+               "WHERE metric='resting_heart_rate' AND recorded_at>=?", (s7,))
+    hrv  = _q1("SELECT ROUND(AVG(value),1) AS v FROM hrv WHERE recorded_at>=?", (s7,))
+    resp = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
+               "WHERE metric='respiratory_rate' AND recorded_at>=?", (s7,))
 
-    hrv = _q1("SELECT ROUND(AVG(value),1) AS v FROM hrv "
-               "WHERE recorded_at >= ?", (s,))
+    # Sleep via properly merged intervals (fixes double-counting)
+    sleep_now = _sleep_avg(7)
+    spo2_now  = _spo2_avg(s7)
 
-    # Sleep: prefer Whoop/Oura aggregates, fall back to Apple Health stages
-    sleep_agg = _q1("""
-        SELECT ROUND(AVG(
-            COALESCE(deep_sleep_hours,0)+COALESCE(rem_sleep_hours,0)+
-            COALESCE(light_sleep_hours,0)
-        ),2) AS v
-        FROM sleep WHERE recorded_at>=? AND source IN ('whoop','oura')
-          AND (stage='asleep' OR stage IS NULL)
-    """, (s,))
-    if not sleep_agg.get("v"):
-        sleep_agg = _q1("""
-            SELECT ROUND(AVG(hours),2) AS v FROM (
-                SELECT date(recorded_at) AS d,
-                       COALESCE(SUM(CASE WHEN stage IN ('asleepdeep','asleeprem','asleepcore','asleepunspecified')
-                           THEN (julianday(SUBSTR(end,1,19))-julianday(SUBSTR(start,1,19)))*24 END),0) AS hours
-                FROM sleep WHERE recorded_at>=? AND source='apple_health'
-                  AND end IS NOT NULL AND start IS NOT NULL AND length(end)>=19 AND length(start)>=19
-                GROUP BY d HAVING hours>0
-            )
-        """, (s,))
+    # ── 30-day baselines for trend comparison ─────────────────────────────────
+    rhr_base  = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
+                    "WHERE metric='resting_heart_rate' AND recorded_at>=?", (s30,))
+    hrv_base  = _q1("SELECT ROUND(AVG(value),1) AS v FROM hrv WHERE recorded_at>=?", (s30,))
+    resp_base = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
+                    "WHERE metric='respiratory_rate' AND recorded_at>=?", (s30,))
+    sleep_base = _sleep_avg(30)
+    spo2_base  = _spo2_avg(s30)
 
-    whoop = _q1("SELECT ROUND(AVG(recovery_score),0) AS v "
-                "FROM whoop_recovery WHERE recorded_at>=?", (s,))
+    # ── Recovery scores ───────────────────────────────────────────────────────
+    whoop  = _q1("SELECT ROUND(AVG(recovery_score),0) AS v FROM whoop_recovery WHERE recorded_at>=?", (s7,))
+    oura   = _q1("SELECT ROUND(AVG(readiness_score),0) AS v FROM oura_readiness WHERE recorded_at>=?", (s7,))
+    strain = _q1("SELECT ROUND(AVG(day_strain),1) AS v FROM whoop_strain WHERE recorded_at>=?", (s7,))
 
-    oura  = _q1("SELECT ROUND(AVG(readiness_score),0) AS v "
-                "FROM oura_readiness WHERE recorded_at>=?", (s,))
-
-    strain = _q1("SELECT ROUND(AVG(day_strain),1) AS v "
-                 "FROM whoop_strain WHERE recorded_at>=?", (s,))
-
-    # Detect which sources have data
+    # ── Detect data sources ───────────────────────────────────────────────────
     sources = []
     if _q1("SELECT 1 AS x FROM heart_rate WHERE source='apple_health' LIMIT 1").get("x"):
         sources.append("apple_health")
@@ -159,14 +181,21 @@ def api_summary():
     last = _q1("SELECT MAX(recorded_at) AS d FROM heart_rate")
 
     return {
-        "resting_hr":      _safe_int(rhr.get("v")),
-        "hrv":             rhr_or_none(hrv.get("v")),
-        "sleep_hours":     rhr_or_none(sleep_agg.get("v")),
-        "whoop_recovery":  _safe_int(whoop.get("v")),
-        "oura_readiness":  _safe_int(oura.get("v")),
-        "whoop_strain":    rhr_or_none(strain.get("v")),
-        "sources":         sources,
-        "last_recorded":   (last.get("d") or "")[:10],
+        "resting_hr":       _safe_int(rhr.get("v")),
+        "resting_hr_trend": _trend_pct(rhr.get("v"), rhr_base.get("v")),
+        "hrv":              rhr_or_none(hrv.get("v")),
+        "hrv_trend":        _trend_pct(hrv.get("v"), hrv_base.get("v")),
+        "sleep_hours":      rhr_or_none(sleep_now),
+        "sleep_trend":      _trend_pct(sleep_now, sleep_base),
+        "spo2":             rhr_or_none(spo2_now),
+        "spo2_trend":       _trend_pct(spo2_now, spo2_base),
+        "resp_rate":        rhr_or_none(resp.get("v")),
+        "resp_trend":       _trend_pct(resp.get("v"), resp_base.get("v")),
+        "whoop_recovery":   _safe_int(whoop.get("v")),
+        "oura_readiness":   _safe_int(oura.get("v")),
+        "whoop_strain":     rhr_or_none(strain.get("v")),
+        "sources":          sources,
+        "last_recorded":    (last.get("d") or "")[:10],
     }
 
 def _safe_int(v):
@@ -211,6 +240,38 @@ def api_hrv(days=30):
         if d not in by_date or r["source"] == "apple_health":
             by_date[d] = r
     return sorted(by_date.values(), key=lambda x: x["date"])
+
+
+def api_blood_oxygen(days=30):
+    s = _since(days)
+    # Apple Health (parsed from HKQuantityTypeIdentifierOxygenSaturation → blood_oxygen_spo2)
+    apple = _q("""
+        SELECT date(recorded_at) AS date, ROUND(AVG(value),1) AS value
+        FROM heart_rate
+        WHERE metric='blood_oxygen_spo2' AND recorded_at>=?
+        GROUP BY date(recorded_at) ORDER BY date
+    """, (s,))
+    # Whoop (spo2_pct column in whoop_recovery)
+    whoop = _q("""
+        SELECT date(recorded_at) AS date, ROUND(AVG(spo2_pct),1) AS value
+        FROM whoop_recovery
+        WHERE spo2_pct IS NOT NULL AND recorded_at>=?
+        GROUP BY date(recorded_at) ORDER BY date
+    """, (s,))
+    # Merge: apple overwrites whoop on the same date
+    by_date = {r["date"]: r for r in whoop}
+    for r in apple:
+        by_date[r["date"]] = r
+    return sorted(by_date.values(), key=lambda x: x["date"])
+
+
+def api_respiration(days=30):
+    return _q("""
+        SELECT date(recorded_at) AS date, ROUND(AVG(value),1) AS value
+        FROM heart_rate
+        WHERE metric='respiratory_rate' AND recorded_at>=?
+        GROUP BY date(recorded_at) ORDER BY date
+    """, (_since(days),))
 
 
 def _dur_hours(end_col, start_col):
@@ -377,6 +438,7 @@ def api_sleep(days=30):
         return rows
 
     # ── 3. Last resort: Apple Health 'in_bed' only (older Apple Watch) ───────
+    dur = _dur_hours("end", "start")
     rows = _q(f"""
         SELECT date(recorded_at) AS date,
                0 AS deep, 0 AS rem,
@@ -482,6 +544,7 @@ HTML = r"""<!DOCTYPE html>
   --hr:#ff375f;--hrv:#bf5af2;
   --sleep-deep:#5e5ce6;--sleep-rem:#bf5af2;--sleep-light:#32ade6;--sleep-awake:rgba(255,149,0,0.45);
   --rec:#30d158;--read:#ffd60a;--strain:#ff9f0a;--workout:#ff9f0a;
+  --spo2:#34c759;--resp:#64d2ff;
   --r:16px;--r2:10px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
@@ -587,6 +650,18 @@ canvas{display:block;width:100%}
 .empty{display:flex;align-items:center;justify-content:center;
   height:80px;color:var(--muted);font-size:13px;font-style:italic}
 
+/* ── Trend badges ────────────────────────────────────────────────────── */
+.trend{display:inline-flex;align-items:center;font-size:10px;font-weight:600;
+  padding:1px 5px;border-radius:3px;margin-left:5px;letter-spacing:.1px;vertical-align:middle}
+.trend-improve{background:rgba(52,199,89,.15);color:#34c759}
+.trend-decline{background:rgba(255,55,95,.15);color:#ff375f}
+.trend-stable{background:rgba(255,255,255,.05);color:var(--muted)}
+
+/* ── Card note (contextual sub-text) ────────────────────────────────── */
+.card-note{font-size:11px;color:var(--muted);margin:-10px 0 14px;
+  padding:7px 10px;background:rgba(52,199,89,.06);border-radius:6px;
+  border-left:2px solid var(--spo2)}
+
 /* ── Responsive ──────────────────────────────────────────────────────── */
 @media(max-width:720px){
   main{padding:16px 14px 50px}
@@ -613,18 +688,19 @@ canvas{display:block;width:100%}
   <!-- Summary row -->
   <div class="stats-row" id="statsRow"></div>
 
-  <!-- Heart Rate -->
+  <!-- Blood Oxygen — Apple captures this but removed it from their UI due to patent dispute -->
   <div class="card">
     <div class="card-hdr">
-      <div class="card-title"><div class="dot" style="background:var(--hr)"></div>Heart Rate</div>
-      <div class="crange" data-chart="hr">
+      <div class="card-title"><div class="dot" style="background:var(--spo2)"></div>Blood Oxygen (SpO₂)</div>
+      <div class="crange" data-chart="spo2">
         <button class="crbtn" data-d="7">7D</button>
         <button class="crbtn" data-d="14">14D</button>
         <button class="crbtn on" data-d="30">30D</button>
       </div>
-      <div class="card-stat"><div class="card-stat-val" id="hrVal" style="color:var(--hr)">—</div><div class="card-stat-lbl">avg bpm</div></div>
+      <div class="card-stat"><div class="card-stat-val" id="spo2Val" style="color:var(--spo2)">—</div><div class="card-stat-lbl">avg SpO₂ %</div></div>
     </div>
-    <div class="chart-wrap"><canvas id="hrC" height="128"></canvas><canvas class="overlay" id="hrO" height="128"></canvas></div>
+    <div class="card-note">Apple Watch measures blood oxygen continuously — Apple removed it from the Health app due to a patent dispute with Masimo. Your data is here.</div>
+    <div class="chart-wrap"><canvas id="spo2C" height="128"></canvas><canvas class="overlay" id="spo2O" height="128"></canvas></div>
   </div>
 
   <!-- HRV + RHR -->
@@ -653,6 +729,20 @@ canvas{display:block;width:100%}
       </div>
       <div class="chart-wrap"><canvas id="rhrC" height="140"></canvas><canvas class="overlay" id="rhrO" height="140"></canvas></div>
     </div>
+  </div>
+
+  <!-- Respiration Rate -->
+  <div class="card" id="respCard">
+    <div class="card-hdr">
+      <div class="card-title"><div class="dot" style="background:var(--resp)"></div>Respiration Rate</div>
+      <div class="crange" data-chart="resp">
+        <button class="crbtn" data-d="7">7D</button>
+        <button class="crbtn" data-d="14">14D</button>
+        <button class="crbtn on" data-d="30">30D</button>
+      </div>
+      <div class="card-stat"><div class="card-stat-val" id="respVal" style="color:var(--resp)">—</div><div class="card-stat-lbl">avg br/min</div></div>
+    </div>
+    <div class="chart-wrap"><canvas id="respC" height="128"></canvas><canvas class="overlay" id="respO" height="128"></canvas></div>
   </div>
 
   <!-- Sleep -->
@@ -729,10 +819,12 @@ const C = {
   rec:   '#30d158',
   read:  '#ffd60a',
   strain:'#ff9f0a',
+  spo2:  '#34c759',
+  resp:  '#64d2ff',
 };
 
 // ── State & utils ─────────────────────────────────────────────────────────────
-const D = {hr:30, hrv:30, rhr:30, sleep:30, rec:30, wo:30};
+const D = {hr:30, hrv:30, rhr:30, sleep:30, rec:30, wo:30, spo2:30, resp:30};
 const cache = {};
 const $ = id => document.getElementById(id);
 const fmt = (n, d=0) => n == null ? '—' : (+n).toFixed(d);
@@ -1296,6 +1388,15 @@ async function get(path) {
   catch { return null; }
 }
 
+function trendBadge(pct, higherIsBetter) {
+  if (pct == null || Math.abs(pct) < 1.0)
+    return '<span class="trend trend-stable">stable</span>';
+  const improving = higherIsBetter ? pct > 0 : pct < 0;
+  const arrow = pct > 0 ? '↑' : '↓';
+  const cls = improving ? 'trend-improve' : 'trend-decline';
+  return `<span class="trend ${cls}">${arrow} ${Math.abs(pct).toFixed(1)}%</span>`;
+}
+
 async function loadSummary() {
   const d = await get('/api/summary');
   if (!d) return;
@@ -1305,23 +1406,25 @@ async function loadSummary() {
   $('badges').innerHTML = (d.sources||[]).map(s=>`<span class="badge">${SRC[s]||s}</span>`).join('');
   $('sync').textContent = d.last_recorded ? `Last record: ${fmtDate(d.last_recorded)}` : 'No data yet';
 
-  // Stat cards
+  // Stat cards — priority order, only shown if value exists
   const stats = [
-    {label:'Resting HR',    val:d.resting_hr,    unit:'bpm',  dec:0, col:'var(--hr)'},
-    {label:'HRV',           val:d.hrv,           unit:' ms',  dec:0, col:'var(--hrv)'},
-    {label:'Avg Sleep',     val:d.sleep_hours,   unit:' hrs', dec:1, col:'var(--sleep-deep)'},
-    {label:'Whoop Recovery',val:d.whoop_recovery,unit:'%',    dec:0, col:'var(--rec)'},
-    {label:'Oura Readiness',val:d.oura_readiness,unit:'',     dec:0, col:'var(--read)'},
-    {label:'Whoop Strain',  val:d.whoop_strain,  unit:' / 21',dec:1, col:'var(--strain)'},
+    {label:'Resting HR',    val:d.resting_hr,    trend:d.resting_hr_trend, hb:false, unit:'bpm',   dec:0, col:'var(--hr)'},
+    {label:'HRV',           val:d.hrv,           trend:d.hrv_trend,        hb:true,  unit:' ms',   dec:0, col:'var(--hrv)'},
+    {label:'Blood Oxygen',  val:d.spo2,          trend:d.spo2_trend,       hb:true,  unit:'%',     dec:1, col:'var(--spo2)'},
+    {label:'Avg Sleep',     val:d.sleep_hours,   trend:d.sleep_trend,      hb:true,  unit:' hrs',  dec:1, col:'var(--sleep-deep)'},
+    {label:'Respiration',   val:d.resp_rate,     trend:d.resp_trend,       hb:false, unit:' br/m', dec:1, col:'var(--resp)'},
+    {label:'Whoop Recovery',val:d.whoop_recovery,trend:null,               hb:true,  unit:'%',     dec:0, col:'var(--rec)'},
+    {label:'Oura Readiness',val:d.oura_readiness,trend:null,               hb:true,  unit:'',      dec:0, col:'var(--read)'},
+    {label:'Whoop Strain',  val:d.whoop_strain,  trend:null,               hb:false, unit:' / 21', dec:1, col:'var(--strain)'},
   ].filter(s=>s.val!=null);
 
   $('statsRow').innerHTML = stats.map(s=>
     `<div class="stat">
-       <div class="stat-label">${s.label}</div>
+       <div class="stat-label">${s.label}${trendBadge(s.trend, s.hb)}</div>
        <div class="stat-val" style="color:${s.col}" data-val="${s.val}" data-dec="${s.dec}">
          —<span class="stat-unit">${s.unit}</span>
        </div>
-       <div class="stat-sub">7-day average</div>
+       <div class="stat-sub">7-day avg vs 30-day</div>
      </div>`
   ).join('');
 
@@ -1334,19 +1437,37 @@ async function loadSummary() {
   });
 }
 
+async function loadBloodOxygen() {
+  const d = await get(`/api/blood-oxygen?days=${D.spo2}`);
+  cache.spo2 = d;
+  const card = $('respCard'); // respiration uses separate card
+  if (!d||!d.length) { const v=$('spo2Val'); if(v) v.textContent='—'; return; }
+  const a = avg(d.map(r=>r.value).filter(v=>v));
+  const el = $('spo2Val'); if(el) countUp(el, a, 1);
+  drawLine('spo2C','spo2O', d, {color:C.spo2, unit:'%', minY:90, maxY:100});
+  const wrap = $('spo2C').parentElement;
+  attachHover(wrap,'spo2C','spo2O', d=>({val:fmt(d.value,1)+'%', sub:'Blood Oxygen'}));
+}
+
+async function loadRespiration() {
+  const d = await get(`/api/respiration?days=${D.resp}`);
+  cache.resp = d;
+  const card = $('respCard');
+  if (!d||!d.length) { if(card) card.style.display='none'; return; }
+  if(card) card.style.display='';
+  const a = avg(d.map(r=>r.value).filter(v=>v));
+  const el = $('respVal'); if(el) countUp(el, a, 1);
+  drawLine('respC','respO', d, {color:C.resp, unit:' br/min'});
+  const wrap = $('respC').parentElement;
+  attachHover(wrap,'respC','respO', d=>({val:fmt(d.value,1)+' br/min', sub:'Respiration Rate'}));
+}
+
 async function loadHR() {
   const d = await get(`/api/heart-rate?days=${D.hr}`);
   cache.hr = d;
   if (!d||!d.length) return;
   const a = avg(d.map(r=>r.avg).filter(v=>v));
-  const el = $('hrVal'); if(el) countUp(el, a, 0);
-  drawLine('hrC','hrO', d, {color:C.hr, valueKey:'avg', unit:'bpm'});
-
-  const wrap = $('hrC').parentElement;
-  attachHover(wrap, 'hrC', 'hrO', d=>{
-    const rng = (d.min&&d.max) ? `${Math.round(d.min)}–${Math.round(d.max)} bpm` : '';
-    return {val: fmt(d.avg,0)+' bpm', sub: rng};
-  });
+  // hr data is fetched but no longer has a dedicated chart; skip draw
 }
 
 async function loadHRV() {
@@ -1471,11 +1592,14 @@ async function loadWorkouts() {
 }
 
 function loadAll() {
-  loadHR(); loadHRV(); loadRHR(); loadSleep(); loadRecovery(); loadWorkouts();
+  loadBloodOxygen(); loadHRV(); loadRHR(); loadRespiration(); loadSleep(); loadRecovery(); loadWorkouts();
 }
 
 // ── Per-card range buttons ────────────────────────────────────────────────────
-const LOADERS = {hr:loadHR, hrv:loadHRV, rhr:loadRHR, sleep:loadSleep, rec:loadRecovery, wo:loadWorkouts};
+const LOADERS = {
+  spo2:loadBloodOxygen, hrv:loadHRV, rhr:loadRHR,
+  resp:loadRespiration, sleep:loadSleep, rec:loadRecovery, wo:loadWorkouts,
+};
 document.querySelectorAll('.crange').forEach(group=>{
   group.querySelectorAll('.crbtn').forEach(btn=>{
     btn.addEventListener('click', ()=>{
@@ -1498,9 +1622,10 @@ document.querySelectorAll('.crange').forEach(group=>{
 window.addEventListener('resize', ()=>{
   clearTimeout(window._rsz);
   window._rsz = setTimeout(()=>{
-    if(cache.hr)     drawLine('hrC','hrO',    cache.hr,  {color:C.hr,  valueKey:'avg', unit:'bpm'});
-    if(cache.hrv)    drawLine('hrvC','hrvO',  cache.hrv, {color:C.hrv, unit:'ms', minY:0});
-    if(cache.rhr)    drawLine('rhrC','rhrO',  cache.rhr, {color:C.rhr, unit:'bpm'});
+    if(cache.spo2)   drawLine('spo2C','spo2O',  cache.spo2, {color:C.spo2, unit:'%', minY:90, maxY:100});
+    if(cache.hrv)    drawLine('hrvC','hrvO',    cache.hrv,  {color:C.hrv,  unit:'ms', minY:0});
+    if(cache.rhr)    drawLine('rhrC','rhrO',    cache.rhr,  {color:C.rhr,  unit:'bpm'});
+    if(cache.resp)   drawLine('respC','respO',  cache.resp, {color:C.resp, unit:' br/min'});
     if(cache.sleep)  drawSleep('slC', cache.sleep);
     if(cache.rec){
       if(cache.rec.whoop?.length) drawLine('whoopC','whoopO',cache.rec.whoop,{color:C.rec,  unit:'%', minY:0, maxY:100});
@@ -1545,16 +1670,18 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         start = qs.get("start", [""])[0]
         end   = qs.get("end",   [""])[0]
         routes = {
-            "/api/summary":      lambda: api_summary(),
-            "/api/heart-rate":   lambda: api_heart_rate(d),
-            "/api/resting-hr":   lambda: api_resting_hr(d),
-            "/api/hrv":          lambda: api_hrv(d),
-            "/api/sleep":        lambda: api_sleep(d),
-            "/api/recovery":     lambda: api_recovery(d),
-            "/api/workouts":     lambda: api_workouts(d),
-            "/api/debug/sleep":  lambda: api_debug_sleep(),
-            "/api/workout-hr":   lambda: api_workout_hr(start, end),
-            "/api/workout-route":lambda: api_workout_route(start),
+            "/api/summary":       lambda: api_summary(),
+            "/api/heart-rate":    lambda: api_heart_rate(d),
+            "/api/resting-hr":    lambda: api_resting_hr(d),
+            "/api/hrv":           lambda: api_hrv(d),
+            "/api/sleep":         lambda: api_sleep(d),
+            "/api/blood-oxygen":  lambda: api_blood_oxygen(d),
+            "/api/respiration":   lambda: api_respiration(d),
+            "/api/recovery":      lambda: api_recovery(d),
+            "/api/workouts":      lambda: api_workouts(d),
+            "/api/debug/sleep":   lambda: api_debug_sleep(),
+            "/api/workout-hr":    lambda: api_workout_hr(start, end),
+            "/api/workout-route": lambda: api_workout_route(start),
         }
         if p.path in routes:
             self._json(routes[p.path]())

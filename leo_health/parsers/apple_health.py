@@ -45,6 +45,11 @@ class _HealthHandler(xml.sax.handler.ContentHandler):
     HRV_TYPES = {
         "HKQuantityTypeIdentifierHeartRateVariabilitySDNN": "hrv_sdnn",
     }
+    # Stored in heart_rate table as distinct metrics
+    VITAL_TYPES = {
+        "HKQuantityTypeIdentifierOxygenSaturation": "blood_oxygen_spo2",
+        "HKQuantityTypeIdentifierRespiratoryRate":  "respiratory_rate",
+    }
     SLEEP_VALUES = {
         "HKCategoryValueSleepAnalysisAsleep": "asleep",
         "HKCategoryValueSleepAnalysisInBed": "in_bed",
@@ -98,6 +103,22 @@ class _HealthHandler(xml.sax.handler.ContentHandler):
                 "metric": self.HRV_TYPES[rtype],
                 "value": float(attrs.get("value", 0)),
                 "unit": attrs.get("unit", "ms"),
+                "recorded_at": _iso(attrs.get("startDate", "")),
+                "device": attrs.get("sourceName", ""),
+            })
+
+        # Blood oxygen + respiration rate (stored in heart_rate table)
+        elif rtype in self.VITAL_TYPES:
+            raw = float(attrs.get("value", 0))
+            metric = self.VITAL_TYPES[rtype]
+            # Apple exports SpO2 as a fraction (0.0–1.0) with unit "%"; convert to pct
+            if metric == "blood_oxygen_spo2" and raw <= 1.0:
+                raw = round(raw * 100, 2)
+            self.heart_rate.append({
+                "source": "apple_health",
+                "metric": metric,
+                "value": raw,
+                "unit": attrs.get("unit", ""),
                 "recorded_at": _iso(attrs.get("startDate", "")),
                 "device": attrs.get("sourceName", ""),
             })
