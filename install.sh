@@ -68,5 +68,11 @@ echo ""
 if [ "$SHELL_NAME" = "fish" ]; then
   echo "Restart your terminal or run: source $SHELL_CONFIG"
 else
-  echo "AirDrop your Apple Health export.zip, then run: leo-watch"
+  OS="$(uname -s)"
+  if [ "$OS" = "Darwin" ]; then
+    echo "AirDrop your Apple Health export.zip to ~/Downloads, then run: leo-watch"
+  else
+    echo "Transfer your Apple Health export.zip to ~/Downloads (LocalSend or email),"
+    echo "then run: leo-watch"
+  fi
 fi
