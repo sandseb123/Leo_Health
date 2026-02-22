@@ -121,8 +121,8 @@ def _sleep_avg(days):
 
 def _spo2_avg(since):
     """SpO2 average from Apple Health and/or Whoop (Apple overwrites if both present)."""
-    apple = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
-                "WHERE metric='blood_oxygen_spo2' AND recorded_at>=?", (since,))
+    apple = _q1("SELECT ROUND(AVG(CASE WHEN value <= 1.5 THEN value * 100.0 ELSE value END),1) AS v "
+                "FROM heart_rate WHERE metric='blood_oxygen_spo2' AND recorded_at>=?", (since,))
     whoop = _q1("SELECT ROUND(AVG(spo2_pct),1) AS v FROM whoop_recovery "
                 "WHERE spo2_pct IS NOT NULL AND recorded_at>=?", (since,))
     return apple.get("v") or whoop.get("v")
@@ -246,7 +246,8 @@ def api_blood_oxygen(days=30):
     s = _since(days)
     # Apple Health (parsed from HKQuantityTypeIdentifierOxygenSaturation → blood_oxygen_spo2)
     apple = _q("""
-        SELECT date(recorded_at) AS date, ROUND(AVG(value),1) AS value
+        SELECT date(recorded_at) AS date,
+               ROUND(AVG(CASE WHEN value <= 1.5 THEN value * 100.0 ELSE value END),1) AS value
         FROM heart_rate
         WHERE metric='blood_oxygen_spo2' AND recorded_at>=?
         GROUP BY date(recorded_at) ORDER BY date
@@ -360,7 +361,21 @@ def api_sleep(days=30):
         GROUP BY date(recorded_at) ORDER BY date
     """, (s,))
     if rows:
-        return rows
+        # Deduplicate to one row per calendar date — keep whichever session
+        # has the most total sleep (handles Whoop + Oura both reporting same night,
+        # or a nap + nighttime session on the same day)
+        by_date: dict = {}
+        for r in rows:
+            d = r["date"]
+            total = (r.get("deep") or 0) + (r.get("rem") or 0) + (r.get("light") or 0)
+            prev = by_date.get(d)
+            if prev is None:
+                by_date[d] = r
+            else:
+                prev_total = (prev.get("deep") or 0) + (prev.get("rem") or 0) + (prev.get("light") or 0)
+                if total > prev_total:
+                    by_date[d] = r
+        return sorted(by_date.values(), key=lambda x: x["date"])
 
     # ── 2. Apple Health detailed stages ──────────────────────────────────────
     # Apple Health stores stage as lowercased enum suffix:
@@ -475,11 +490,14 @@ def api_debug_sleep():
 
 
 def api_workout_hr(start, end):
-    """Heart rate samples recorded during a workout window."""
+    """Heart rate samples recorded during a workout window.
+    Uses datetime() for timezone-safe comparison (handles -05:00 vs Z offsets)."""
     return _q("""
         SELECT recorded_at AS time, ROUND(value,0) AS value
         FROM heart_rate
-        WHERE metric='heart_rate' AND recorded_at>=? AND recorded_at<=?
+        WHERE metric='heart_rate'
+          AND datetime(recorded_at) >= datetime(?)
+          AND datetime(recorded_at) <= datetime(?)
         ORDER BY recorded_at LIMIT 500
     """, (start, end))
 
@@ -489,7 +507,7 @@ def api_workout_route(start):
     return _q("""
         SELECT latitude AS lat, longitude AS lon, altitude_m AS alt, timestamp AS time
         FROM workout_routes
-        WHERE workout_start=?
+        WHERE datetime(workout_start) = datetime(?)
         ORDER BY timestamp LIMIT 5000
     """, (start,))
 
@@ -511,16 +529,33 @@ def api_recovery(days=30):
     return {"whoop": whoop, "whoop_strain": whoop_strain, "oura": oura}
 
 
+def api_temperature(days=30):
+    s = _since(days)
+    whoop = _q("""
+        SELECT date(recorded_at) AS date, ROUND(skin_temp_celsius, 2) AS value
+        FROM whoop_recovery
+        WHERE recorded_at>=? AND skin_temp_celsius IS NOT NULL
+        ORDER BY date
+    """, (s,))
+    oura = _q("""
+        SELECT date(recorded_at) AS date, ROUND(temperature_deviation, 2) AS value
+        FROM oura_readiness
+        WHERE recorded_at>=? AND temperature_deviation IS NOT NULL
+        ORDER BY date
+    """, (s,))
+    return {"whoop": whoop, "oura": oura}
+
+
 def api_workouts(days=30):
     return _q("""
         SELECT w.recorded_at,
+               w.end,
                date(w.recorded_at)               AS date,
                time(w.recorded_at)               AS time,
                w.activity,
                ROUND(w.duration_minutes, 1)      AS duration,
                ROUND(w.calories, 0)              AS calories,
                ROUND(w.distance_km, 2)           AS distance_km,
-               w.end,
                w.source,
                (SELECT ROUND(AVG(h.value), 0)
                 FROM heart_rate h
@@ -565,7 +600,7 @@ HTML = r"""<!DOCTYPE html>
   --hr:#ff375f;--hrv:#bf5af2;
   --sleep-deep:#5e5ce6;--sleep-rem:#bf5af2;--sleep-light:#32ade6;--sleep-awake:rgba(255,149,0,0.45);
   --rec:#30d158;--read:#ffd60a;--strain:#ff9f0a;--workout:#ff9f0a;
-  --spo2:#34c759;--resp:#64d2ff;
+  --spo2:#34c759;--resp:#64d2ff;--temp:#5ac8fa;
   --r:16px;--r2:10px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
@@ -596,14 +631,20 @@ header{position:sticky;top:0;z-index:100;
 main{max-width:1360px;margin:0 auto;padding:28px 28px 60px}
 
 /* ── Summary cards ───────────────────────────────────────────────────── */
-.stats-row{display:flex;gap:14px;margin-bottom:20px;flex-wrap:wrap}
-.stat{flex:1;min-width:150px;background:var(--card);border:1px solid var(--border);
-  border-radius:var(--r);padding:18px 20px;transition:border-color .2s,transform .2s;cursor:default}
+.stats-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;margin-bottom:20px}
+.stat{position:relative;background:var(--card);border:1px solid var(--border);
+  border-radius:var(--r);padding:20px 20px 16px;
+  transition:border-color .2s,transform .2s;cursor:default;overflow:hidden}
+.stat::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;
+  background:var(--stat-col,#fff);opacity:.55}
 .stat:hover{border-color:var(--border2);transform:translateY(-2px)}
-.stat-label{font-size:10px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted);margin-bottom:10px}
-.stat-val{font-size:30px;font-weight:700;letter-spacing:-1px;line-height:1}
-.stat-unit{font-size:13px;font-weight:400;color:var(--dim);margin-left:2px}
-.stat-sub{font-size:11px;color:var(--muted);margin-top:5px}
+.stat-hdr{display:flex;align-items:center;gap:6px;margin-bottom:12px}
+.stat-icon{font-size:14px;line-height:1}
+.stat-label{font-size:10px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted)}
+.stat-val{font-size:40px;font-weight:800;letter-spacing:-2px;line-height:1;margin-bottom:10px}
+.stat-unit{font-size:14px;font-weight:500;color:var(--dim);margin-left:3px;letter-spacing:0}
+.stat-ftr{display:flex;align-items:center;gap:7px}
+.stat-sub{font-size:10px;color:var(--muted)}
 
 /* ── Chart cards ─────────────────────────────────────────────────────── */
 .card{background:var(--card);border:1px solid var(--border);border-radius:var(--r);
@@ -613,8 +654,19 @@ main{max-width:1360px;margin:0 auto;padding:28px 28px 60px}
 .card-title{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600}
 .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .card-stat{text-align:right}
-.card-stat-val{font-size:20px;font-weight:700;letter-spacing:-.5px}
+.card-stat-val{font-size:26px;font-weight:800;letter-spacing:-.8px}
 .card-stat-lbl{font-size:10px;color:var(--muted);margin-top:1px}
+
+/* ── Activity breakdown bars ─────────────────────────────────────────── */
+.act-breakdown{margin-top:18px;border-top:1px solid var(--border);padding-top:16px}
+.act-breakdown-title{font-size:11px;text-transform:uppercase;letter-spacing:.8px;
+  color:var(--muted);margin-bottom:12px}
+.act-bar-row{display:flex;align-items:center;gap:10px;margin-bottom:9px}
+.act-bar-label{font-size:12px;font-weight:500;width:110px;flex-shrink:0;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.act-bar-track{flex:1;height:6px;background:rgba(255,255,255,0.07);border-radius:3px;overflow:hidden}
+.act-bar-fill{height:100%;border-radius:3px;transition:width .6s cubic-bezier(.4,0,.2,1)}
+.act-bar-pct{font-size:11px;color:var(--muted);width:30px;text-align:right;flex-shrink:0}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
 
 /* ── Canvas ──────────────────────────────────────────────────────────── */
@@ -643,7 +695,7 @@ canvas{display:block;width:100%}
 .wo-chev{font-size:11px;color:var(--muted);transition:transform .2s;flex-shrink:0}
 .wo.open .wo-chev{transform:rotate(90deg)}
 /* Expandable detail panel */
-.wo-detail{max-height:0;overflow:hidden;transition:max-height .35s ease}
+.wo-detail{max-height:0;overflow:hidden;transition:max-height .3s ease}
 .wo.open .wo-detail{max-height:700px}
 .wo-detail-inner{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));
   gap:10px 16px;padding:0 14px 10px 46px}
@@ -653,24 +705,21 @@ canvas{display:block;width:100%}
 /* Workout HR chart + route map */
 .wo-detail-charts{display:flex;gap:12px;padding:0 14px 10px 14px;align-items:flex-start}
 .wo-hr-chart{flex:1;min-width:0}
-.wo-hr-chart canvas{display:block;width:100%;height:80px;border-radius:6px}
+.wo-hr-chart canvas{display:block;width:100%;height:120px;border-radius:6px}
 .wo-hr-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px}
 .wo-route-wrap{width:130px;flex-shrink:0}
 .wo-route-wrap svg{display:block;width:130px;height:130px;border-radius:8px}
 .wo-route-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px}
-/* HR pill in collapsed row */
-.wo-hr-pill{font-size:11px;font-weight:500;color:rgba(255,55,95,.8);letter-spacing:.1px;white-space:nowrap}
-.wo-hr-pill-sep{margin:0 2px;opacity:.5}
-/* HR zone bars */
-.wo-zones{display:none;padding:0 14px 14px 14px}
-.wo-zone-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:7px}
-.zone-row{display:flex;align-items:center;gap:7px;margin-bottom:5px}
-.zone-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
-.zone-name{font-size:10px;font-weight:600;color:var(--dim);width:22px;flex-shrink:0}
-.zone-range{font-size:10px;color:var(--muted);width:58px;flex-shrink:0;letter-spacing:.2px}
-.zone-bar-bg{flex:1;height:5px;background:rgba(255,255,255,.07);border-radius:3px;overflow:hidden}
-.zone-bar-fill{height:100%;border-radius:3px;transition:width .5s ease;opacity:.85}
-.zone-time{font-size:11px;font-weight:500;color:var(--dim);width:38px;text-align:right;flex-shrink:0}
+/* HR Zones bar */
+.wo-zones{padding:4px 14px 14px 14px}
+.wo-zones-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:7px;display:flex;align-items:center;gap:8px}
+.wo-zones-maxhr{font-size:9px;color:rgba(240,240,248,0.25);font-weight:400;letter-spacing:0}
+.wo-zone-bar{display:flex;height:10px;border-radius:5px;overflow:hidden;gap:2px;margin-bottom:8px}
+.wo-zone-seg{border-radius:3px}
+.wo-zone-legend{display:flex;gap:10px 18px;flex-wrap:wrap}
+.wo-zone-item{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--dim)}
+.wo-zone-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.wo-zone-time{color:var(--muted);font-size:9px;margin-left:1px}
 
 /* ── Tooltip ─────────────────────────────────────────────────────────── */
 #tt{position:fixed;background:rgba(14,14,26,.95);border:1px solid rgba(255,255,255,.12);
@@ -685,22 +734,24 @@ canvas{display:block;width:100%}
   height:80px;color:var(--muted);font-size:13px;font-style:italic}
 
 /* ── Trend badges ────────────────────────────────────────────────────── */
-.trend{display:inline-flex;align-items:center;font-size:10px;font-weight:600;
-  padding:1px 5px;border-radius:3px;margin-left:5px;letter-spacing:.1px;vertical-align:middle}
-.trend-improve{background:rgba(52,199,89,.15);color:#34c759}
-.trend-decline{background:rgba(255,55,95,.15);color:#ff375f}
-.trend-stable{background:rgba(255,255,255,.05);color:var(--muted)}
+.trend{display:inline-flex;align-items:center;
+  font-size:11px;font-weight:700;letter-spacing:.2px;
+  padding:3px 9px;border-radius:20px;white-space:nowrap}
+.trend-improve{background:rgba(180,255,80,.13);color:#b4ff50;border:1px solid rgba(180,255,80,.25)}
+.trend-decline{background:rgba(255,55,95,.13);color:#ff375f;border:1px solid rgba(255,55,95,.25)}
+.trend-stable{background:rgba(255,255,255,.05);color:var(--muted);border:1px solid rgba(255,255,255,.07)}
 
 /* ── Card note (contextual sub-text) ────────────────────────────────── */
 .card-note{font-size:11px;color:var(--muted);margin:-10px 0 14px;
-  padding:7px 10px;background:rgba(52,199,89,.06);border-radius:6px;
-  border-left:2px solid var(--spo2)}
+  padding:7px 10px;background:rgba(255,255,255,.03);border-radius:6px;
+  border-left:2px solid var(--muted)}
 
 /* ── Responsive ──────────────────────────────────────────────────────── */
 @media(max-width:720px){
   main{padding:16px 14px 50px}
   .two{grid-template-columns:1fr}
-  .stats-row .stat{min-width:140px}
+  .stats-row{grid-template-columns:repeat(2,1fr)}
+  .stat-val{font-size:34px}
   header{padding:0 16px}
 }
 </style>
@@ -722,30 +773,15 @@ canvas{display:block;width:100%}
   <!-- Summary row -->
   <div class="stats-row" id="statsRow"></div>
 
-  <!-- Blood Oxygen — Apple captures this but removed it from their UI due to patent dispute -->
-  <div class="card">
-    <div class="card-hdr">
-      <div class="card-title"><div class="dot" style="background:var(--spo2)"></div>Blood Oxygen (SpO₂)</div>
-      <div class="crange" data-chart="spo2">
-        <button class="crbtn" data-d="7">7D</button>
-        <button class="crbtn" data-d="14">14D</button>
-        <button class="crbtn on" data-d="30">30D</button>
-      </div>
-      <div class="card-stat"><div class="card-stat-val" id="spo2Val" style="color:var(--spo2)">—</div><div class="card-stat-lbl">avg SpO₂ %</div></div>
-    </div>
-    <div class="card-note">Apple Watch measures blood oxygen continuously — Apple removed it from the Health app due to a patent dispute with Masimo. Your data is here.</div>
-    <div class="chart-wrap"><canvas id="spo2C" height="128"></canvas><canvas class="overlay" id="spo2O" height="128"></canvas></div>
-  </div>
-
   <!-- HRV + RHR -->
   <div class="two">
     <div class="card">
       <div class="card-hdr">
         <div class="card-title"><div class="dot" style="background:var(--hrv)"></div>HRV</div>
         <div class="crange" data-chart="hrv">
-          <button class="crbtn" data-d="7">7D</button>
+          <button class="crbtn on" data-d="7">7D</button>
           <button class="crbtn" data-d="14">14D</button>
-          <button class="crbtn on" data-d="30">30D</button>
+          <button class="crbtn" data-d="30">30D</button>
         </div>
         <div class="card-stat"><div class="card-stat-val" id="hrvVal" style="color:var(--hrv)">—</div><div class="card-stat-lbl">avg ms</div></div>
       </div>
@@ -755,9 +791,9 @@ canvas{display:block;width:100%}
       <div class="card-hdr">
         <div class="card-title"><div class="dot" style="background:#ff6b6b"></div>Resting HR</div>
         <div class="crange" data-chart="rhr">
-          <button class="crbtn" data-d="7">7D</button>
+          <button class="crbtn on" data-d="7">7D</button>
           <button class="crbtn" data-d="14">14D</button>
-          <button class="crbtn on" data-d="30">30D</button>
+          <button class="crbtn" data-d="30">30D</button>
         </div>
         <div class="card-stat"><div class="card-stat-val" id="rhrVal" style="color:#ff6b6b">—</div><div class="card-stat-lbl">avg bpm</div></div>
       </div>
@@ -765,18 +801,46 @@ canvas{display:block;width:100%}
     </div>
   </div>
 
-  <!-- Respiration Rate -->
-  <div class="card" id="respCard">
+  <!-- Heart Rate Daily Range -->
+  <div class="card" id="hrCard" style="display:none">
     <div class="card-hdr">
-      <div class="card-title"><div class="dot" style="background:var(--resp)"></div>Respiration Rate</div>
-      <div class="crange" data-chart="resp">
-        <button class="crbtn" data-d="7">7D</button>
+      <div class="card-title"><div class="dot" style="background:#ff9f43"></div>Heart Rate</div>
+      <div class="crange" data-chart="hr">
+        <button class="crbtn on" data-d="7">7D</button>
         <button class="crbtn" data-d="14">14D</button>
-        <button class="crbtn on" data-d="30">30D</button>
+        <button class="crbtn" data-d="30">30D</button>
       </div>
-      <div class="card-stat"><div class="card-stat-val" id="respVal" style="color:var(--resp)">—</div><div class="card-stat-lbl">avg br/min</div></div>
+      <div class="card-stat"><div class="card-stat-val" id="hrVal" style="color:#ff9f43">—</div><div class="card-stat-lbl">avg bpm</div></div>
     </div>
-    <div class="chart-wrap"><canvas id="respC" height="128"></canvas><canvas class="overlay" id="respO" height="128"></canvas></div>
+    <div class="chart-wrap"><canvas id="hrC" height="128"></canvas><canvas class="overlay" id="hrO" height="128"></canvas></div>
+  </div>
+
+  <!-- Blood Oxygen + Respiration Rate -->
+  <div class="two">
+    <div class="card" id="spo2Card">
+      <div class="card-hdr">
+        <div class="card-title"><div class="dot" style="background:var(--spo2)"></div>Blood Oxygen</div>
+        <div class="crange" data-chart="spo2">
+          <button class="crbtn on" data-d="7">7D</button>
+          <button class="crbtn" data-d="14">14D</button>
+          <button class="crbtn" data-d="30">30D</button>
+        </div>
+        <div class="card-stat"><div class="card-stat-val" id="spo2Val" style="color:var(--spo2)">—</div><div class="card-stat-lbl">avg SpO₂ %</div></div>
+      </div>
+      <div class="chart-wrap"><canvas id="spo2C" height="140"></canvas><canvas class="overlay" id="spo2O" height="140"></canvas></div>
+    </div>
+    <div class="card" id="respCard">
+      <div class="card-hdr">
+        <div class="card-title"><div class="dot" style="background:var(--resp)"></div>Respiration Rate</div>
+        <div class="crange" data-chart="resp">
+          <button class="crbtn on" data-d="7">7D</button>
+          <button class="crbtn" data-d="14">14D</button>
+          <button class="crbtn" data-d="30">30D</button>
+        </div>
+        <div class="card-stat"><div class="card-stat-val" id="respVal" style="color:var(--resp)">—</div><div class="card-stat-lbl">avg br/min</div></div>
+      </div>
+      <div class="chart-wrap"><canvas id="respC" height="140"></canvas><canvas class="overlay" id="respO" height="140"></canvas></div>
+    </div>
   </div>
 
   <!-- Sleep -->
@@ -784,11 +848,12 @@ canvas{display:block;width:100%}
     <div class="card-hdr">
       <div class="card-title"><div class="dot" style="background:var(--sleep-deep)"></div>Sleep</div>
       <div class="crange" data-chart="sleep">
-        <button class="crbtn" data-d="7">7D</button>
+        <button class="crbtn on" data-d="7">7D</button>
         <button class="crbtn" data-d="14">14D</button>
-        <button class="crbtn on" data-d="30">30D</button>
+        <button class="crbtn" data-d="30">30D</button>
       </div>
       <div class="card-stat"><div class="card-stat-val" id="sleepVal" style="color:var(--sleep-deep)">—</div><div class="card-stat-lbl">avg hours</div></div>
+      <div class="card-stat" id="effStat" style="display:none"><div class="card-stat-val" id="effVal" style="color:#32ade6">—</div><div class="card-stat-lbl">efficiency %</div></div>
     </div>
     <div class="chart-wrap"><canvas id="slC" height="150"></canvas><canvas class="overlay" id="slO" height="150"></canvas></div>
     <div class="legend">
@@ -805,9 +870,9 @@ canvas{display:block;width:100%}
       <div class="card-hdr">
         <div class="card-title"><div class="dot" style="background:var(--rec)"></div>Whoop Recovery</div>
         <div class="crange" data-chart="rec">
-          <button class="crbtn" data-d="7">7D</button>
+          <button class="crbtn on" data-d="7">7D</button>
           <button class="crbtn" data-d="14">14D</button>
-          <button class="crbtn on" data-d="30">30D</button>
+          <button class="crbtn" data-d="30">30D</button>
         </div>
         <div class="card-stat"><div class="card-stat-val" id="whoopVal" style="color:var(--rec)">—</div><div class="card-stat-lbl">avg %</div></div>
       </div>
@@ -817,9 +882,9 @@ canvas{display:block;width:100%}
       <div class="card-hdr">
         <div class="card-title"><div class="dot" style="background:var(--read)"></div>Oura Readiness</div>
         <div class="crange" data-chart="rec">
-          <button class="crbtn" data-d="7">7D</button>
+          <button class="crbtn on" data-d="7">7D</button>
           <button class="crbtn" data-d="14">14D</button>
-          <button class="crbtn on" data-d="30">30D</button>
+          <button class="crbtn" data-d="30">30D</button>
         </div>
         <div class="card-stat"><div class="card-stat-val" id="ouraVal" style="color:var(--read)">—</div><div class="card-stat-lbl">avg score</div></div>
       </div>
@@ -827,17 +892,46 @@ canvas{display:block;width:100%}
     </div>
   </div>
 
+  <!-- Whoop Strain -->
+  <div class="card" id="strainCard" style="display:none">
+    <div class="card-hdr">
+      <div class="card-title"><div class="dot" style="background:var(--strain)"></div>Whoop Strain</div>
+      <div class="crange" data-chart="rec">
+        <button class="crbtn on" data-d="7">7D</button>
+        <button class="crbtn" data-d="14">14D</button>
+        <button class="crbtn" data-d="30">30D</button>
+      </div>
+      <div class="card-stat"><div class="card-stat-val" id="strainVal" style="color:var(--strain)">—</div><div class="card-stat-lbl">avg / 21</div></div>
+    </div>
+    <div class="chart-wrap"><canvas id="strainC" height="128"></canvas><canvas class="overlay" id="strainO" height="128"></canvas></div>
+  </div>
+
+  <!-- Body Temperature -->
+  <div class="card" id="tempCard" style="display:none">
+    <div class="card-hdr">
+      <div class="card-title"><div class="dot" style="background:var(--temp)"></div>Body Temperature</div>
+      <div class="crange" data-chart="temp">
+        <button class="crbtn on" data-d="7">7D</button>
+        <button class="crbtn" data-d="14">14D</button>
+        <button class="crbtn" data-d="30">30D</button>
+      </div>
+      <div class="card-stat"><div class="card-stat-val" id="tempVal" style="color:var(--temp)">—</div><div class="card-stat-lbl" id="tempLbl">deviation °C</div></div>
+    </div>
+    <div class="chart-wrap"><canvas id="tempC" height="128"></canvas><canvas class="overlay" id="tempO" height="128"></canvas></div>
+  </div>
+
   <!-- Workouts -->
   <div class="card">
     <div class="card-hdr">
       <div class="card-title"><div class="dot" style="background:var(--workout)"></div>Workouts</div>
       <div class="crange" data-chart="wo">
-        <button class="crbtn" data-d="7">7D</button>
+        <button class="crbtn on" data-d="7">7D</button>
         <button class="crbtn" data-d="14">14D</button>
-        <button class="crbtn on" data-d="30">30D</button>
+        <button class="crbtn" data-d="30">30D</button>
       </div>
     </div>
     <div id="woList"></div>
+    <div id="actBreakdown"></div>
   </div>
 </main>
 
@@ -855,10 +949,11 @@ const C = {
   strain:'#ff9f0a',
   spo2:  '#34c759',
   resp:  '#64d2ff',
+  temp:  '#5ac8fa',
 };
 
 // ── State & utils ─────────────────────────────────────────────────────────────
-const D = {hr:30, hrv:30, rhr:30, sleep:30, rec:30, wo:30, spo2:30, resp:30};
+const D = {hr:7, hrv:7, rhr:7, sleep:7, rec:7, wo:7, spo2:7, resp:7, temp:7};
 const cache = {};
 const $ = id => document.getElementById(id);
 const fmt = (n, d=0) => n == null ? '—' : (+n).toFixed(d);
@@ -1225,71 +1320,203 @@ function toggleWo(el, idx) {
   }
 }
 
-// ── Workout HR mini-chart ──────────────────────────────────────────────────────
+// ── Workout HR mini-chart (with hover) ────────────────────────────────────────
 function drawWoHR(canvasId, data) {
   const c = $(canvasId);
   if (!c) return;
   const dpr = window.devicePixelRatio || 1;
   const w = c.offsetWidth || c.parentElement.offsetWidth || 280;
-  const h = 80;
+  const h = 120;
   c.width = w * dpr; c.height = h * dpr;
   const cx = c.getContext('2d');
   cx.scale(dpr, dpr);
 
   const vals = data.map(d => +d.value).filter(v => !isNaN(v));
   if (vals.length < 2) return;
-  const mn = Math.min(...vals) * 0.96;
-  const mx = Math.max(...vals) * 1.04;
+  const rawMax = Math.max(...vals);
+  const maxRef = Math.round(Math.max(rawMax * 1.12, rawMax + 15));
+  const mn = Math.min(Math.min(...vals) * 0.97, maxRef * 0.45);
+  const mx = maxRef * 1.03;
   const rng = mx - mn || 1;
-  const pad = {t:8, r:8, b:18, l:34};
+  const pad = {t:8, r:8, b:18, l:36};
   const cw = w - pad.l - pad.r, ch = h - pad.t - pad.b;
+  const avgV = Math.round(vals.reduce((s,v)=>s+v,0)/vals.length);
+  const maxV = Math.round(rawMax);
 
-  cx.clearRect(0, 0, w, h);
-
-  // Grid lines
-  cx.strokeStyle = 'rgba(255,255,255,0.05)'; cx.lineWidth = 1;
-  [0, 0.5, 1].forEach(f => {
-    const y = pad.t + ch * f;
-    cx.beginPath(); cx.moveTo(pad.l, y); cx.lineTo(w-pad.r, y); cx.stroke();
-    cx.fillStyle = 'rgba(255,255,255,0.28)'; cx.font = '9px -apple-system,sans-serif';
-    cx.textAlign = 'right'; cx.textBaseline = 'middle';
-    cx.fillText(Math.round(mx - rng*f), pad.l-4, y);
-  });
+  const ZONES = [
+    { lo:0,    hi:0.50, color:'#5ac8fa', name:'Easy' },
+    { lo:0.50, hi:0.60, color:'#30d158', name:'Fat Burn' },
+    { lo:0.60, hi:0.70, color:'#ffd60a', name:'Aerobic' },
+    { lo:0.70, hi:0.85, color:'#ff9f0a', name:'Tempo' },
+    { lo:0.85, hi:1.01, color:'#ff375f', name:'Peak' },
+  ];
+  const getZone = bpm => ZONES.find(z => (bpm/maxRef) >= z.lo && (bpm/maxRef) < z.hi) || ZONES[4];
 
   const pts = data.map((d, i) => ({
     x: pad.l + (i / Math.max(data.length-1, 1)) * cw,
     y: pad.t + ch - ((+d.value - mn) / rng) * ch,
+    v: +d.value,
+    t: d.time,
   }));
 
-  // Fill
-  const grad = cx.createLinearGradient(0, pad.t, 0, pad.t+ch);
-  grad.addColorStop(0, C.hr+'40'); grad.addColorStop(1, C.hr+'04');
-  cx.beginPath();
-  cx.moveTo(pts[0].x, pts[0].y);
-  for (let i=1; i<pts.length; i++) {
-    const cpx = (pts[i-1].x + pts[i].x) / 2;
-    cx.bezierCurveTo(cpx, pts[i-1].y, cpx, pts[i].y, pts[i].x, pts[i].y);
+  function rrect(x, y, rw, rh, r) {
+    cx.beginPath();
+    cx.moveTo(x+r, y);
+    cx.lineTo(x+rw-r, y); cx.quadraticCurveTo(x+rw, y, x+rw, y+r);
+    cx.lineTo(x+rw, y+rh-r); cx.quadraticCurveTo(x+rw, y+rh, x+rw-r, y+rh);
+    cx.lineTo(x+r, y+rh); cx.quadraticCurveTo(x, y+rh, x, y+rh-r);
+    cx.lineTo(x, y+r); cx.quadraticCurveTo(x, y, x+r, y);
+    cx.closePath();
   }
-  cx.lineTo(pts[pts.length-1].x, pad.t+ch);
-  cx.lineTo(pts[0].x, pad.t+ch);
-  cx.closePath();
-  cx.fillStyle = grad; cx.fill();
 
-  // Line
-  cx.beginPath();
-  cx.moveTo(pts[0].x, pts[0].y);
-  for (let i=1; i<pts.length; i++) {
-    const cpx = (pts[i-1].x + pts[i].x) / 2;
-    cx.bezierCurveTo(cpx, pts[i-1].y, cpx, pts[i].y, pts[i].x, pts[i].y);
+  function drawBase() {
+    cx.clearRect(0, 0, w, h);
+
+    // Zone bands
+    ZONES.forEach(z => {
+      const yTop = pad.t + ch - Math.min(1, Math.max(0, (z.hi * maxRef - mn) / rng)) * ch;
+      const yBot = pad.t + ch - Math.min(1, Math.max(0, (z.lo * maxRef - mn) / rng)) * ch;
+      if (yBot > yTop) { cx.fillStyle = z.color+'1a'; cx.fillRect(pad.l, yTop, cw, yBot-yTop); }
+    });
+
+    // Grid
+    cx.lineWidth = 1;
+    [0, 0.33, 0.67, 1].forEach(f => {
+      const y = pad.t + ch * f;
+      cx.beginPath(); cx.moveTo(pad.l, y); cx.lineTo(w-pad.r, y);
+      cx.strokeStyle = 'rgba(255,255,255,0.05)'; cx.stroke();
+      cx.fillStyle = 'rgba(255,255,255,0.28)'; cx.font = '9px -apple-system,sans-serif';
+      cx.textAlign = 'right'; cx.textBaseline = 'middle';
+      cx.fillText(Math.round(mx - rng*f), pad.l-4, y);
+    });
+
+    // Fill
+    const grad = cx.createLinearGradient(0, pad.t, 0, pad.t+ch);
+    grad.addColorStop(0, C.hr+'40'); grad.addColorStop(1, C.hr+'04');
+    cx.beginPath(); cx.moveTo(pts[0].x, pts[0].y);
+    for (let i=1; i<pts.length; i++) {
+      const cpx = (pts[i-1].x+pts[i].x)/2;
+      cx.bezierCurveTo(cpx, pts[i-1].y, cpx, pts[i].y, pts[i].x, pts[i].y);
+    }
+    cx.lineTo(pts[pts.length-1].x, pad.t+ch); cx.lineTo(pts[0].x, pad.t+ch);
+    cx.closePath(); cx.fillStyle = grad; cx.fill();
+
+    // Line
+    cx.beginPath(); cx.moveTo(pts[0].x, pts[0].y);
+    for (let i=1; i<pts.length; i++) {
+      const cpx = (pts[i-1].x+pts[i].x)/2;
+      cx.bezierCurveTo(cpx, pts[i-1].y, cpx, pts[i].y, pts[i].x, pts[i].y);
+    }
+    cx.strokeStyle = C.hr; cx.lineWidth = 1.5; cx.lineJoin = 'round'; cx.stroke();
+
+    // Avg dashed line
+    const avgY = pad.t + ch - ((avgV - mn) / rng) * ch;
+    cx.beginPath(); cx.moveTo(pad.l, avgY); cx.lineTo(w-pad.r, avgY);
+    cx.strokeStyle = 'rgba(255,255,255,0.18)'; cx.lineWidth = 1;
+    cx.setLineDash([3,4]); cx.stroke(); cx.setLineDash([]);
+
+    // Max marker
+    const maxY = pad.t + ch - ((maxV - mn) / rng) * ch;
+    cx.fillStyle = C.hr; cx.font = 'bold 9px -apple-system,sans-serif';
+    cx.textAlign = 'left'; cx.textBaseline = 'bottom';
+    cx.fillText(`▲ ${maxV}`, pad.l+2, maxY-1);
+
+    // Avg label
+    cx.fillStyle = 'rgba(255,255,255,0.35)'; cx.font = '9px -apple-system,sans-serif';
+    cx.textAlign = 'right'; cx.textBaseline = 'alphabetic';
+    cx.fillText(`avg ${avgV} bpm`, w-pad.r, h-2);
   }
-  cx.strokeStyle = C.hr; cx.lineWidth = 1.5; cx.lineJoin = 'round'; cx.stroke();
 
-  // Avg/max labels
-  const avgV = Math.round(vals.reduce((s,v)=>s+v,0)/vals.length);
-  const maxV = Math.round(Math.max(...vals));
-  cx.fillStyle = 'rgba(255,255,255,0.4)'; cx.font = '9px -apple-system,sans-serif';
-  cx.textAlign = 'right'; cx.textBaseline = 'alphabetic';
-  cx.fillText(`avg ${avgV} · max ${maxV} bpm`, w-pad.r, h-2);
+  function drawHover(mouseX) {
+    // Nearest point
+    const idx = pts.reduce((b, p, i) =>
+      Math.abs(p.x - mouseX) < Math.abs(pts[b].x - mouseX) ? i : b, 0);
+    const pt = pts[idx];
+    const zone = getZone(pt.v);
+
+    // Vertical crosshair
+    cx.beginPath(); cx.moveTo(pt.x, pad.t); cx.lineTo(pt.x, pad.t+ch);
+    cx.strokeStyle = 'rgba(255,255,255,0.22)'; cx.lineWidth = 1;
+    cx.setLineDash([2,3]); cx.stroke(); cx.setLineDash([]);
+
+    // Horizontal crosshair
+    cx.beginPath(); cx.moveTo(pad.l, pt.y); cx.lineTo(w-pad.r, pt.y);
+    cx.strokeStyle = 'rgba(255,255,255,0.1)'; cx.lineWidth = 1;
+    cx.setLineDash([2,3]); cx.stroke(); cx.setLineDash([]);
+
+    // Outer glow ring
+    cx.beginPath(); cx.arc(pt.x, pt.y, 6, 0, Math.PI*2);
+    cx.fillStyle = zone.color+'44'; cx.fill();
+    // Coloured dot
+    cx.beginPath(); cx.arc(pt.x, pt.y, 4, 0, Math.PI*2);
+    cx.fillStyle = zone.color; cx.fill();
+    // White centre
+    cx.beginPath(); cx.arc(pt.x, pt.y, 2, 0, Math.PI*2);
+    cx.fillStyle = '#fff'; cx.fill();
+
+    // Elapsed time
+    let elapsed = '';
+    if (pt.t && pts[0].t) {
+      const ms = new Date(pt.t) - new Date(pts[0].t);
+      const m = Math.floor(ms/60000), s = Math.floor((ms%60000)/1000);
+      elapsed = `+${m}:${String(s).padStart(2,'0')}`;
+    }
+
+    // Tooltip dimensions
+    const bpmStr = `${Math.round(pt.v)} bpm`;
+    cx.font = 'bold 13px -apple-system,sans-serif';
+    const bpmW = cx.measureText(bpmStr).width;
+    cx.font = '10px -apple-system,sans-serif';
+    const subW = cx.measureText(zone.name).width + (elapsed ? cx.measureText(elapsed).width + 14 : 0);
+    const tipW = Math.max(bpmW, subW) + 20;
+    const tipH = 40;
+
+    let tx = pt.x - tipW/2;
+    if (tx < pad.l) tx = pad.l;
+    if (tx + tipW > w - 4) tx = w - 4 - tipW;
+    const ty = pt.y - tipH - 12 < pad.t ? pt.y + 10 : pt.y - tipH - 12;
+
+    // Bubble background
+    cx.fillStyle = 'rgba(12,12,22,0.93)';
+    rrect(tx, ty, tipW, tipH, 7); cx.fill();
+    cx.strokeStyle = zone.color+'55'; cx.lineWidth = 1;
+    rrect(tx, ty, tipW, tipH, 7); cx.stroke();
+
+    // BPM
+    cx.fillStyle = zone.color;
+    cx.font = 'bold 13px -apple-system,sans-serif';
+    cx.textAlign = 'left'; cx.textBaseline = 'top';
+    cx.fillText(bpmStr, tx+10, ty+7);
+
+    // Zone name + elapsed
+    cx.fillStyle = 'rgba(240,240,248,0.45)';
+    cx.font = '10px -apple-system,sans-serif';
+    cx.textAlign = 'left'; cx.textBaseline = 'top';
+    cx.fillText(zone.name, tx+10, ty+23);
+    if (elapsed) {
+      cx.textAlign = 'right';
+      cx.fillText(elapsed, tx+tipW-10, ty+23);
+    }
+  }
+
+  drawBase();
+
+  // Attach hover listeners (clean up previous if canvas reused)
+  if (c._hrMove) c.removeEventListener('mousemove', c._hrMove);
+  if (c._hrLeave) c.removeEventListener('mouseleave', c._hrLeave);
+
+  c._hrMove = e => {
+    const rect = c.getBoundingClientRect();
+    const mouseX = (e.clientX - rect.left) * (w / rect.width);
+    if (mouseX < pad.l || mouseX > w-pad.r) { drawBase(); return; }
+    drawBase();
+    drawHover(mouseX);
+  };
+  c._hrLeave = () => drawBase();
+
+  c.addEventListener('mousemove', c._hrMove);
+  c.addEventListener('mouseleave', c._hrLeave);
+  c.style.cursor = 'crosshair';
 }
 
 // ── Workout GPS route SVG ─────────────────────────────────────────────────────
@@ -1319,80 +1546,53 @@ function drawWoRoute(svgId, points) {
   `;
 }
 
-// ── Heart rate zone bars ───────────────────────────────────────────────────────
-function drawZones(zonesId, barsId, hrData, maxHrOverride) {
-  const wrap = $(zonesId);
-  if (!wrap || !hrData || hrData.length < 4) return;
-
-  const vals = hrData.map(d => +d.value).filter(v => !isNaN(v) && v > 0);
-  if (vals.length < 4) return;
-
-  // Use the workout's recorded max HR as the 100% reference
-  const peak = maxHrOverride || Math.max(...vals);
-
+// ── HR Zone breakdown ────────────────────────────────────────────────────────
+function renderHRZones(el, vals, workoutMax) {
+  if (!el || !vals.length) return;
+  // Estimate true max HR: assume workout peaked at ~90% of real max
+  const maxRef = Math.round(Math.max(workoutMax * 1.11, workoutMax + 12));
   const ZONES = [
-    { name: 'Z1', label: 'Recovery',  color: '#5ac8fa', min: 0.00, max: 0.60 },
-    { name: 'Z2', label: 'Aerobic',   color: '#34c759', min: 0.60, max: 0.70 },
-    { name: 'Z3', label: 'Tempo',     color: '#ffd60a', min: 0.70, max: 0.80 },
-    { name: 'Z4', label: 'Threshold', color: '#ff9f0a', min: 0.80, max: 0.90 },
-    { name: 'Z5', label: 'Max',       color: '#ff375f', min: 0.90, max: 9.99 },
+    { n:'Z1', label:'Easy',     color:'#5ac8fa', lo:0,    hi:0.50 },
+    { n:'Z2', label:'Fat Burn', color:'#30d158', lo:0.50, hi:0.60 },
+    { n:'Z3', label:'Aerobic',  color:'#ffd60a', lo:0.60, hi:0.70 },
+    { n:'Z4', label:'Tempo',    color:'#ff9f0a', lo:0.70, hi:0.85 },
+    { n:'Z5', label:'Peak',     color:'#ff375f', lo:0.85, hi:1.01 },
   ];
+  const counts = ZONES.map(() => 0);
+  vals.forEach(v => {
+    const pct = v / maxRef;
+    const i = ZONES.findIndex(z => pct >= z.lo && pct < z.hi);
+    if (i >= 0) counts[i]++;
+  });
+  const total = vals.length;
+  const pcts  = counts.map(c => c / total);
+  // Approximate time per zone assuming ~5s per sample
+  const secPerSample = 5;
+  const fmtTime = secs => secs >= 60
+    ? `${Math.floor(secs/60)}m${secs%60 ? ' '+secs%60+'s' : ''}`
+    : `${secs}s`;
+  const timeStrs = counts.map(c => fmtTime(Math.round(c * secPerSample)));
 
-  // Compute time in each zone using consecutive timestamp intervals
-  const timeSecs = ZONES.map(() => 0);
-  let totalSecs = 0;
-  for (let i = 0; i < hrData.length - 1; i++) {
-    const t0 = new Date(hrData[i].time).getTime();
-    const t1 = new Date(hrData[i+1].time).getTime();
-    const dt = Math.max(0, Math.min((t1 - t0) / 1000, 120)); // cap gap at 2 min
-    const mid = ((+hrData[i].value) + (+hrData[i+1].value)) / 2;
-    const pct = mid / peak;
-    const zi = ZONES.findIndex(z => pct >= z.min && pct < z.max);
-    if (zi >= 0) { timeSecs[zi] += dt; totalSecs += dt; }
-  }
-  // Fallback to sample counts if timestamps are unusable
-  if (totalSecs < 10) {
-    timeSecs.fill(0); totalSecs = 0;
-    vals.forEach(v => {
-      const pct = v / peak;
-      const zi = ZONES.findIndex(z => pct >= z.min && pct < z.max);
-      if (zi >= 0) { timeSecs[zi]++; totalSecs++; }
-    });
-  }
-  if (totalSecs === 0 || !timeSecs.some(t => t > 0)) return;
-
-  const maxT = Math.max(...timeSecs);
-  function fmtSecs(s) {
-    if (s === 0) return '—';
-    const m = Math.floor(s / 60), sec = Math.round(s % 60);
-    return m > 0 ? `${m}:${String(sec).padStart(2,'0')}` : `0:${String(sec).padStart(2,'0')}`;
-  }
-
-  const barsEl = $(barsId);
-  if (!barsEl) return;
-  barsEl.innerHTML = ZONES.map((z, i) => {
-    const fillPct = maxT > 0 ? Math.round((timeSecs[i] / maxT) * 100) : 0;
-    const loHR = Math.round(z.min * peak);
-    const hiHR = z.max >= 9 ? `${Math.round(0.90 * peak)}+` : Math.round(z.max * peak);
-    const bpmRange = `${loHR}–${hiHR}`;
-    return `<div class="zone-row">
-      <div class="zone-dot" style="background:${z.color}"></div>
-      <div class="zone-name">${z.name}</div>
-      <div class="zone-range">${bpmRange}</div>
-      <div class="zone-bar-bg"><div class="zone-bar-fill" style="width:${fillPct}%;background:${z.color}"></div></div>
-      <div class="zone-time">${fmtSecs(timeSecs[i])}</div>
-    </div>`;
-  }).join('');
-
-  wrap.style.display = '';
+  el.innerHTML = `<div class="wo-zones">
+    <div class="wo-zones-lbl">HR Zones <span class="wo-zones-maxhr">est. max ${maxRef} bpm</span></div>
+    <div class="wo-zone-bar">${ZONES.map((z,i) => pcts[i]>0.005
+      ? `<div class="wo-zone-seg" style="flex:${pcts[i]};background:${z.color};opacity:0.82"></div>`
+      : '').join('')}</div>
+    <div class="wo-zone-legend">${ZONES.map((z,i) => `
+      <div class="wo-zone-item">
+        <div class="wo-zone-dot" style="background:${z.color}"></div>
+        <span>${z.n} ${z.label}</span>
+        <span class="wo-zone-time">${Math.round(pcts[i]*100)}%${counts[i]>0?' · '+timeStrs[i]:''}</span>
+      </div>`).join('')}
+    </div>
+  </div>`;
 }
 
-// ── Load workout detail (HR chart + route + zones) ────────────────────────────
+// ── Load workout detail (HR chart + route) ────────────────────────────────────
 async function loadWoDetail(el, idx) {
   const start    = el.dataset.start;
   const end      = el.dataset.end || start;
   const activity = el.dataset.activity || '';
-  const maxHr    = +el.dataset.maxHr || 0;
 
   // Compute end time: if no end stored, use start + 2h as upper bound
   const endParam = end && end !== start ? end
@@ -1402,11 +1602,20 @@ async function loadWoDetail(el, idx) {
     `/api/workout-hr?start=${encodeURIComponent(start)}&end=${encodeURIComponent(endParam)}`
   );
   const hrWrap = $(`woHrWrap${idx}`);
-  if (hrData && hrData.length >= 4) {
+  if (hrData && hrData.length >= 2) {
     drawWoHR(`woHrC${idx}`, hrData);
-    drawZones(`woZones${idx}`, `woZoneBars${idx}`, hrData, maxHr || 0);
+    const vals = hrData.map(d => +d.value).filter(v => !isNaN(v));
+    const avgHR = Math.round(vals.reduce((s,v)=>s+v,0)/vals.length);
+    const maxHR = Math.round(Math.max(...vals));
+    const hrStatAvg = $(`woAvgHR${idx}`);
+    if (hrStatAvg) hrStatAvg.innerHTML =
+      `<div class="wo-stat-val" style="color:var(--hr)">${avgHR}</div><div class="wo-stat-lbl">Avg HR (bpm)</div>`;
+    const hrStatMax = $(`woMaxHR${idx}`);
+    if (hrStatMax) hrStatMax.innerHTML =
+      `<div class="wo-stat-val" style="color:var(--hr)">${maxHR}</div><div class="wo-stat-lbl">Max HR (bpm)</div>`;
+    renderHRZones($(`woZones${idx}`), vals, maxHR);
   } else if (hrWrap) {
-    hrWrap.style.display = 'none';
+    hrWrap.innerHTML = '<div style="font-size:11px;color:var(--muted);padding:8px 0">No HR samples in Apple Health for this workout</div>';
   }
 
   const ROUTE_ACTS = new Set(['running','cycling','walking','hiking','skiing','snowboarding']);
@@ -1440,24 +1649,21 @@ function renderWorkouts(data) {
                    : '';
     const canRoute = ROUTE_ACTS.has(key);
 
-    // HR pill shown in the collapsed row
-    const hrPill = (w.avg_hr || w.max_hr)
-      ? `<div class="wo-hr-pill">♥ ${w.avg_hr||'—'}<span class="wo-hr-pill-sep">/</span>${w.max_hr||'—'}</div>`
-      : '';
-
     const stats = [
       dur   && `<div class="wo-stat"><div class="wo-stat-val">${dur}</div><div class="wo-stat-lbl">Duration</div></div>`,
       dist  && `<div class="wo-stat"><div class="wo-stat-val">${dist}</div><div class="wo-stat-lbl">Distance</div></div>`,
       cals  && `<div class="wo-stat"><div class="wo-stat-val">${cals}</div><div class="wo-stat-lbl">Calories</div></div>`,
       pace  && `<div class="wo-stat"><div class="wo-stat-val">${pace}</div><div class="wo-stat-lbl">Pace</div></div>`,
-      w.avg_hr && `<div class="wo-stat"><div class="wo-stat-val">${w.avg_hr} <span style="font-size:10px;font-weight:400">bpm</span></div><div class="wo-stat-lbl">Avg HR</div></div>`,
-      w.max_hr && `<div class="wo-stat"><div class="wo-stat-val">${w.max_hr} <span style="font-size:10px;font-weight:400">bpm</span></div><div class="wo-stat-lbl">Max HR</div></div>`,
+      `<div class="wo-stat" id="woAvgHR${idx}"></div>`,
+      `<div class="wo-stat" id="woMaxHR${idx}"></div>`,
       w.source && `<div class="wo-stat"><div class="wo-stat-val" style="font-size:11px;font-weight:400">${w.source.replace('_',' ')}</div><div class="wo-stat-lbl">Source</div></div>`,
     ].filter(Boolean).join('');
 
+    const safeStart = encodeURIComponent(w.recorded_at||'');
+    const safeEnd   = encodeURIComponent(w.end||w.recorded_at||'');
+
     return `<div class="wo" onclick="toggleWo(this,${idx})"
-        data-start="${w.recorded_at||''}" data-end="${w.end||''}" data-activity="${key}" data-idx="${idx}"
-        data-avg-hr="${w.avg_hr||''}" data-max-hr="${w.max_hr||''}">
+        data-start="${w.recorded_at||''}" data-end="${w.end||''}" data-activity="${key}" data-idx="${idx}">
       <div class="wo-main">
         <div class="wo-left">
           <div class="wo-icon">${icon}</div>
@@ -1468,8 +1674,7 @@ function renderWorkouts(data) {
         </div>
         <div class="wo-right">
           <div class="wo-dur">${dur}</div>
-          ${dist ? `<div class="wo-cal">${dist}</div>` : (cals ? `<div class="wo-cal">${cals}</div>` : '')}
-          ${hrPill}
+          ${pace ? `<div class="wo-cal">${pace}</div>` : dist ? `<div class="wo-cal">${dist}</div>` : cals ? `<div class="wo-cal">${cals}</div>` : ''}
           <span class="wo-chev">›</span>
         </div>
       </div>
@@ -1477,23 +1682,47 @@ function renderWorkouts(data) {
         ${stats ? `<div class="wo-detail-inner">${stats}</div>` : ''}
         <div class="wo-detail-charts">
           <div class="wo-hr-chart" id="woHrWrap${idx}">
-            <div class="wo-hr-lbl">Heart Rate During Workout</div>
-            <canvas id="woHrC${idx}" height="80"></canvas>
+            <div class="wo-hr-lbl">Heart Rate Trend</div>
+            <canvas id="woHrC${idx}" height="120"></canvas>
           </div>
           ${canRoute ? `<div class="wo-route-wrap" id="woRtWrap${idx}">
             <div class="wo-route-lbl">Route</div>
             <svg id="woRtSvg${idx}" viewBox="0 0 130 130"></svg>
           </div>` : ''}
         </div>
-        <div class="wo-zones" id="woZones${idx}">
-          <div class="wo-zone-lbl">Time in Zone</div>
-          <div id="woZoneBars${idx}"></div>
-        </div>
+        <div id="woZones${idx}"></div>
       </div>
     </div>`;
   });
 
   el.innerHTML = '<div class="wo-list">' + rows.join('') + '</div>';
+
+  // ── Activity breakdown bars ──────────────────────────────────────────
+  const counts = {};
+  data.forEach(w => {
+    const name = woName(w.activity);
+    counts[name] = (counts[name] || 0) + 1;
+  });
+  const sorted = Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0, 5);
+  const maxC = sorted[0]?.[1] || 1;
+  const barColors = ['#ff9f0a','#bf5af2','#32ade6','#30d158','#ff375f'];
+  const breakdown = $('actBreakdown');
+  if (breakdown && sorted.length > 1) {
+    breakdown.innerHTML = `
+      <div class="act-breakdown">
+        <div class="act-breakdown-title">Activity Mix</div>
+        ${sorted.map(([name, count], i) => `
+          <div class="act-bar-row">
+            <div class="act-bar-label">${name}</div>
+            <div class="act-bar-track">
+              <div class="act-bar-fill" style="width:${Math.round(count/maxC*100)}%;background:${barColors[i%barColors.length]}"></div>
+            </div>
+            <div class="act-bar-pct">${count}</div>
+          </div>`).join('')}
+      </div>`;
+  } else if (breakdown) {
+    breakdown.innerHTML = '';
+  }
 }
 
 // ── API loaders ───────────────────────────────────────────────────────────────
@@ -1504,7 +1733,7 @@ async function get(path) {
 
 function trendBadge(pct, higherIsBetter) {
   if (pct == null || Math.abs(pct) < 1.0)
-    return '<span class="trend trend-stable">stable</span>';
+    return '<span class="trend trend-stable">— stable</span>';
   const improving = higherIsBetter ? pct > 0 : pct < 0;
   const arrow = pct > 0 ? '↑' : '↓';
   const cls = improving ? 'trend-improve' : 'trend-decline';
@@ -1522,23 +1751,29 @@ async function loadSummary() {
 
   // Stat cards — priority order, only shown if value exists
   const stats = [
-    {label:'Resting HR',    val:d.resting_hr,    trend:d.resting_hr_trend, hb:false, unit:'bpm',   dec:0, col:'var(--hr)'},
-    {label:'HRV',           val:d.hrv,           trend:d.hrv_trend,        hb:true,  unit:' ms',   dec:0, col:'var(--hrv)'},
-    {label:'Blood Oxygen',  val:d.spo2,          trend:d.spo2_trend,       hb:true,  unit:'%',     dec:1, col:'var(--spo2)'},
-    {label:'Avg Sleep',     val:d.sleep_hours,   trend:d.sleep_trend,      hb:true,  unit:' hrs',  dec:1, col:'var(--sleep-deep)'},
-    {label:'Respiration',   val:d.resp_rate,     trend:d.resp_trend,       hb:false, unit:' br/m', dec:1, col:'var(--resp)'},
-    {label:'Whoop Recovery',val:d.whoop_recovery,trend:null,               hb:true,  unit:'%',     dec:0, col:'var(--rec)'},
-    {label:'Oura Readiness',val:d.oura_readiness,trend:null,               hb:true,  unit:'',      dec:0, col:'var(--read)'},
-    {label:'Whoop Strain',  val:d.whoop_strain,  trend:null,               hb:false, unit:' / 21', dec:1, col:'var(--strain)'},
+    {label:'Resting HR',    icon:'❤️',  val:d.resting_hr,    trend:d.resting_hr_trend, hb:false, unit:'bpm',   dec:0, col:'var(--hr)'},
+    {label:'HRV',           icon:'📊',  val:d.hrv,           trend:d.hrv_trend,        hb:true,  unit:' ms',   dec:0, col:'var(--hrv)'},
+    {label:'Blood Oxygen',  icon:'🫁',  val:d.spo2,          trend:d.spo2_trend,       hb:true,  unit:'%',     dec:1, col:'var(--spo2)'},
+    {label:'Avg Sleep',     icon:'🌙',  val:d.sleep_hours,   trend:d.sleep_trend,      hb:true,  unit:' hrs',  dec:1, col:'var(--sleep-deep)'},
+    {label:'Respiration',   icon:'💨',  val:d.resp_rate,     trend:d.resp_trend,       hb:false, unit:' br/m', dec:1, col:'var(--resp)'},
+    {label:'Whoop Recovery',icon:'⚡',  val:d.whoop_recovery,trend:null,               hb:true,  unit:'%',     dec:0, col:'var(--rec)'},
+    {label:'Oura Readiness',icon:'💍',  val:d.oura_readiness,trend:null,               hb:true,  unit:'',      dec:0, col:'var(--read)'},
+    {label:'Whoop Strain',  icon:'🔥',  val:d.whoop_strain,  trend:null,               hb:false, unit:' / 21', dec:1, col:'var(--strain)'},
   ].filter(s=>s.val!=null);
 
   $('statsRow').innerHTML = stats.map(s=>
-    `<div class="stat">
-       <div class="stat-label">${s.label}${trendBadge(s.trend, s.hb)}</div>
+    `<div class="stat" style="--stat-col:${s.col}">
+       <div class="stat-hdr">
+         <span class="stat-icon">${s.icon}</span>
+         <span class="stat-label">${s.label}</span>
+       </div>
        <div class="stat-val" style="color:${s.col}" data-val="${s.val}" data-dec="${s.dec}">
          —<span class="stat-unit">${s.unit}</span>
        </div>
-       <div class="stat-sub">7-day avg vs 30-day</div>
+       <div class="stat-ftr">
+         ${trendBadge(s.trend, s.hb)}
+         <span class="stat-sub">vs 30d avg</span>
+       </div>
      </div>`
   ).join('');
 
@@ -1554,8 +1789,9 @@ async function loadSummary() {
 async function loadBloodOxygen() {
   const d = await get(`/api/blood-oxygen?days=${D.spo2}`);
   cache.spo2 = d;
-  const card = $('respCard'); // respiration uses separate card
-  if (!d||!d.length) { const v=$('spo2Val'); if(v) v.textContent='—'; return; }
+  const card = $('spo2Card');
+  if (!d||!d.length) { if(card) card.style.display='none'; return; }
+  if(card) card.style.display='';
   const a = avg(d.map(r=>r.value).filter(v=>v));
   const el = $('spo2Val'); if(el) countUp(el, a, 1);
   drawLine('spo2C','spo2O', d, {color:C.spo2, unit:'%', minY:90, maxY:100});
@@ -1576,12 +1812,98 @@ async function loadRespiration() {
   attachHover(wrap,'respC','respO', d=>({val:fmt(d.value,1)+' br/min', sub:'Respiration Rate'}));
 }
 
+function drawHRBand(mainId, overlayId, data) {
+  const m = ctx2d(mainId);
+  if (!m) return;
+  const {cx, w, h} = m;
+  const pad = {t:12, r:12, b:26, l:38};
+  const cw = w - pad.l - pad.r;
+  const ch = h - pad.t - pad.b;
+
+  const allVals = data.flatMap(d=>[d.min, d.max]).filter(v=>v!=null);
+  if (!allVals.length) return;
+
+  const yMin = Math.min(...allVals) * 0.96;
+  const yMax = Math.max(...allVals) * 1.04;
+  const yRange = yMax - yMin || 1;
+
+  const xOf = i => pad.l + (i / Math.max(data.length-1, 1)) * cw;
+  const yOf = v => pad.t + ch - ((v-yMin)/yRange)*ch;
+
+  cx.clearRect(0, 0, w, h);
+
+  // Grid
+  cx.strokeStyle = 'rgba(255,255,255,0.04)';
+  cx.lineWidth = 1;
+  for (let i=0; i<=4; i++) {
+    const y = pad.t + (ch/4)*i;
+    cx.beginPath(); cx.moveTo(pad.l, y); cx.lineTo(w-pad.r, y); cx.stroke();
+  }
+
+  // Y labels
+  cx.fillStyle = 'rgba(255,255,255,0.28)';
+  cx.font = '10px -apple-system,sans-serif';
+  cx.textAlign = 'right'; cx.textBaseline = 'middle';
+  for (let i=0; i<=2; i++) {
+    const v = yMin + (yRange/2)*i;
+    cx.fillText(Math.round(v), pad.l-6, pad.t + ch - ((v-yMin)/yRange)*ch);
+  }
+
+  // X labels
+  cx.textAlign = 'center'; cx.textBaseline = 'alphabetic';
+  [0, Math.floor(data.length/2), data.length-1].forEach(i => {
+    if (data[i]) cx.fillText(fmtDate(data[i].date), xOf(i), h-4);
+  });
+
+  const color = '#ff9f43';
+
+  // Shaded band between min and max
+  if (data.some(d=>d.min!=null && d.max!=null)) {
+    cx.beginPath();
+    let first = true;
+    data.forEach((d,i) => {
+      if (d.max == null) { first = true; return; }
+      if (first) { cx.moveTo(xOf(i), yOf(d.max)); first = false; }
+      else cx.lineTo(xOf(i), yOf(d.max));
+    });
+    [...data].reverse().forEach((d,i) => {
+      if (d.min != null) cx.lineTo(xOf(data.length-1-i), yOf(d.min));
+    });
+    cx.closePath();
+    cx.fillStyle = color + '28';
+    cx.fill();
+  }
+
+  // Avg line
+  cx.beginPath();
+  let started = false;
+  data.forEach((d,i) => {
+    if (d.avg == null) { started = false; return; }
+    if (!started) { cx.moveTo(xOf(i), yOf(d.avg)); started = true; }
+    else cx.lineTo(xOf(i), yOf(d.avg));
+  });
+  cx.strokeStyle = color;
+  cx.lineWidth = 2;
+  cx.stroke();
+
+  chartMeta[mainId] = {
+    data,
+    pts: data.map((d,i) => ({x: xOf(i), y: d.avg != null ? yOf(d.avg) : null})),
+    valueKey: 'avg', dateKey: 'date', color, unit: 'bpm', pad, cw, ch
+  };
+}
+
 async function loadHR() {
   const d = await get(`/api/heart-rate?days=${D.hr}`);
   cache.hr = d;
-  if (!d||!d.length) return;
-  const a = avg(d.map(r=>r.avg).filter(v=>v));
-  // hr data is fetched but no longer has a dedicated chart; skip draw
+  const card = $('hrCard');
+  if (!d||!d.length) { if(card) card.style.display='none'; return; }
+  if(card) card.style.display='';
+  const a = avg(d.map(r=>r.avg).filter(v=>v!=null));
+  const el=$('hrVal'); if(el) countUp(el, a, 0);
+  drawHRBand('hrC','hrO', d);
+  const wrap=$('hrC').parentElement;
+  attachHover(wrap,'hrC','hrO', r=>({val:fmt(r.avg,0)+' bpm', sub:`min ${fmt(r.min,0)} / max ${fmt(r.max,0)}`}));
 }
 
 async function loadHRV() {
@@ -1611,56 +1933,140 @@ function attachSleepHover(data) {
   const overlay = $('slO');
   if (!canvas || !overlay) return;
   const nights = data.slice(-Math.min(30, data.length));
-  const tt = $('tt'), ttDate = $('tt-date'), ttVal = $('tt-val'), ttSub = $('tt-sub');
   const wrap = canvas.parentElement;
   let lastIdx = -1;
+
+  const STAGES = [
+    { key:'deep',  color:'#5e5ce6',             label:'Deep'  },
+    { key:'rem',   color:'#bf5af2',             label:'REM'   },
+    { key:'light', color:'#32ade6',             label:'Light' },
+    { key:'awake', color:'rgba(255,149,0,0.85)', label:'Awake' },
+  ];
 
   function getIdx(e) {
     const rect = canvas.getBoundingClientRect();
     const mx = (e.clientX - rect.left) / rect.width * (canvas.width / (window.devicePixelRatio||1));
-    const pad = {l:36, r:10, t:10, b:26};
-    const cw = (canvas.width / (window.devicePixelRatio||1)) - pad.l - pad.r;
+    const cw = (canvas.width / (window.devicePixelRatio||1)) - 36 - 10;
     const barW = (cw - (nights.length-1)*3) / nights.length;
-    return Math.floor((mx - pad.l) / (barW + 3));
+    return Math.floor((mx - 36) / (barW + 3));
   }
 
-  function drawHighlight(idx) {
-    const dpr = window.devicePixelRatio||1;
-    const W = overlay.offsetWidth||600, H = overlay.offsetHeight||150;
-    overlay.width = W*dpr; overlay.height = H*dpr;
-    overlay.style.width = W+'px'; overlay.style.height = H+'px';
+  function rrect(cx, x, y, rw, rh, r) {
+    cx.beginPath();
+    cx.moveTo(x+r, y);
+    cx.lineTo(x+rw-r, y); cx.quadraticCurveTo(x+rw, y, x+rw, y+r);
+    cx.lineTo(x+rw, y+rh-r); cx.quadraticCurveTo(x+rw, y+rh, x+rw-r, y+rh);
+    cx.lineTo(x+r, y+rh); cx.quadraticCurveTo(x, y+rh, x, y+rh-r);
+    cx.lineTo(x, y+r); cx.quadraticCurveTo(x, y, x+r, y);
+    cx.closePath();
+  }
+
+  function hm(v) {
+    const hrs = Math.floor(v), min = Math.round((v - hrs) * 60);
+    return min > 0 ? `${hrs}h ${min}m` : `${hrs}h`;
+  }
+
+  function draw(idx) {
+    const dpr = window.devicePixelRatio || 1;
+    const W = overlay.offsetWidth || canvas.offsetWidth || 600;
+    const H = overlay.offsetHeight || canvas.offsetHeight || 150;
+    overlay.width = W * dpr; overlay.height = H * dpr;
+    overlay.style.width = W + 'px'; overlay.style.height = H + 'px';
     const cx = overlay.getContext('2d'); cx.scale(dpr, dpr);
-    cx.clearRect(0,0,W,H);
+    cx.clearRect(0, 0, W, H);
     if (idx < 0 || idx >= nights.length) return;
-    const pad = {l:36,r:10,t:10,b:26};
-    const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
+
+    const PAD = {l:36, r:10, t:10, b:26};
+    const cw = W - PAD.l - PAD.r, ch = H - PAD.t - PAD.b;
     const barW = (cw - (nights.length-1)*3) / nights.length;
-    const x = pad.l + idx*(barW+3);
-    cx.fillStyle = 'rgba(255,255,255,0.07)';
-    cx.fillRect(x, pad.t, barW, ch);
+    const barX = PAD.l + idx*(barW+3);
+
+    // Hovered bar highlight
+    cx.fillStyle = 'rgba(255,255,255,0.08)';
+    rrect(cx, barX-1, PAD.t, barW+2, ch, 3);
+    cx.fill();
+
+    const n = nights[idx];
+    const sleepH = (n.deep||0) + (n.rem||0) + (n.light||0);
+    const totalH  = sleepH + (n.awake||0);
+
+    // ── Card ─────────────────────────────────────────────────────────────────
+    const CW = 200, CH = 90;
+    // Flip left/right based on which side has more room
+    const barCx = barX + barW / 2;
+    let cx0 = barCx > W / 2 ? barX - CW - 6 : barX + barW + 6;
+    cx0 = Math.max(4, Math.min(cx0, W - CW - 4));
+    const cy0 = PAD.t + Math.max(0, (ch - CH) / 2);  // centred in chart area
+
+    // Background
+    cx.fillStyle = 'rgba(10,10,22,0.95)';
+    rrect(cx, cx0, cy0, CW, CH, 9); cx.fill();
+    cx.strokeStyle = 'rgba(255,255,255,0.08)'; cx.lineWidth = 1;
+    rrect(cx, cx0, cy0, CW, CH, 9); cx.stroke();
+
+    // Date
+    cx.fillStyle = 'rgba(255,255,255,0.4)';
+    cx.font = '10px -apple-system,sans-serif';
+    cx.textAlign = 'left'; cx.textBaseline = 'top';
+    cx.fillText(fmtDateLong(n.date), cx0+11, cy0+9);
+
+    // Total sleep
+    cx.fillStyle = '#fff';
+    cx.font = 'bold 16px -apple-system,sans-serif';
+    cx.fillText(hm(sleepH), cx0+11, cy0+22);
+
+    // ── Proportional stage bar ────────────────────────────────────────────────
+    const SBX = cx0+11, SBY = cy0+46, SBW = CW-22, SBH = 8;
+    cx.save();
+    rrect(cx, SBX, SBY, SBW, SBH, 4); cx.clip();
+    let sx = SBX;
+    STAGES.forEach(s => {
+      const val = n[s.key] || 0;
+      if (!val || !totalH) return;
+      const sw = (val / totalH) * SBW;
+      if (sw < 0.5) return;
+      cx.fillStyle = s.color;
+      cx.fillRect(sx, SBY, sw, SBH);
+      sx += sw;
+    });
+    cx.restore();
+
+    // ── Stage breakdown 2-column grid ─────────────────────────────────────────
+    const COL2 = cx0 + 11 + (CW - 22) / 2 + 4;
+    STAGES.forEach((s, i) => {
+      const col = i % 2, row = Math.floor(i / 2);
+      const gx = col === 0 ? cx0+11 : COL2;
+      const gy = cy0+60 + row*16;
+      const val = n[s.key] || 0;
+
+      // Coloured dot
+      cx.fillStyle = s.color;
+      cx.beginPath(); cx.arc(gx+4, gy+5, 3, 0, Math.PI*2); cx.fill();
+
+      // Stage name
+      cx.fillStyle = 'rgba(255,255,255,0.38)';
+      cx.font = '10px -apple-system,sans-serif';
+      cx.textAlign = 'left'; cx.textBaseline = 'top';
+      cx.fillText(s.label, gx+12, gy);
+
+      // Duration (right-aligned to its column)
+      cx.fillStyle = '#fff';
+      cx.font = 'bold 10px -apple-system,sans-serif';
+      cx.textAlign = 'right';
+      const rightEdge = col === 0 ? COL2 - 6 : cx0 + CW - 11;
+      cx.fillText(val > 0 ? hm(val) : '—', rightEdge, gy);
+    });
   }
 
-  wrap.addEventListener('mousemove', e=>{
+  // Suppress DOM tooltip while hovering over the sleep chart
+  const domTT = $('tt');
+  wrap.addEventListener('mousemove', e => {
+    if (domTT) domTT.style.display = 'none';
     const idx = getIdx(e);
-    if (idx < 0 || idx >= nights.length) {
-      tt.style.display='none'; if(lastIdx!==idx){drawHighlight(-1);lastIdx=idx;} return;
-    }
-    if (idx !== lastIdx) { drawHighlight(idx); lastIdx = idx; }
-    const n = nights[idx];
-    const total = (n.deep||0)+(n.rem||0)+(n.light||0);
-    const h = v => v>0 ? v.toFixed(1)+'h' : '—';
-    ttDate.textContent = fmtDateLong(n.date);
-    ttVal.textContent = h(total) + ' sleep';
-    ttSub.innerHTML =
-      `<span style="color:#5e5ce6">● Deep&nbsp;&nbsp;${h(n.deep||0)}</span><br>`+
-      `<span style="color:#bf5af2">● REM&nbsp;&nbsp;&nbsp;${h(n.rem||0)}</span><br>`+
-      `<span style="color:#32ade6">● Light&nbsp;&nbsp;${h(n.light||0)}</span><br>`+
-      `<span style="color:rgba(255,149,0,.9)">● Awake&nbsp;${h(n.awake||0)}</span>`;
-    tt.style.display='block';
-    tt.style.left=(e.clientX+14)+'px';
-    tt.style.top=Math.max(10,e.clientY-100)+'px';
+    if (idx < 0 || idx >= nights.length) { draw(-1); lastIdx = -1; return; }
+    if (idx !== lastIdx) { draw(idx); lastIdx = idx; }
   });
-  wrap.addEventListener('mouseleave', ()=>{ tt.style.display='none'; drawHighlight(-1); lastIdx=-1; });
+  wrap.addEventListener('mouseleave', () => { draw(-1); lastIdx = -1; });
 }
 
 async function loadSleep() {
@@ -1669,6 +2075,17 @@ async function loadSleep() {
   if (!d||!d.length) { $('sleepVal').textContent='—'; return; }
   const a = avg(d.map(n=>(n.deep||0)+(n.rem||0)+(n.light||0)).filter(v=>v>0));
   const el = $('sleepVal'); if(el) countUp(el, a, 1);
+
+  // Sleep efficiency — only shown when Whoop/Oura provide it (non-zero)
+  const effVals = d.map(n=>n.efficiency).filter(v=>v!=null && v>0);
+  const effStat = $('effStat');
+  if (effVals.length && effStat) {
+    effStat.style.display = '';
+    const effEl = $('effVal'); if(effEl) countUp(effEl, avg(effVals), 0);
+  } else if (effStat) {
+    effStat.style.display = 'none';
+  }
+
   drawSleep('slC', d);
   attachSleepHover(d);
 }
@@ -1681,7 +2098,10 @@ async function loadRecovery() {
   const hasOura  = d && d.oura  && d.oura.length;
   $('whoopCard').style.display = hasWhoop ? '' : 'none';
   $('ouraCard').style.display  = hasOura  ? '' : 'none';
-  $('recRow').style.display    = (hasWhoop||hasOura) ? '' : 'none';
+  // Full-width when only one recovery source; hide entirely when neither
+  const recRow = $('recRow');
+  if (!hasWhoop && !hasOura) { recRow.style.display = 'none'; }
+  else { recRow.style.display = ''; recRow.className = (hasWhoop && hasOura) ? 'two' : ''; }
 
   if (hasWhoop) {
     const a = avg(d.whoop.map(r=>r.value).filter(v=>v));
@@ -1697,6 +2117,16 @@ async function loadRecovery() {
     const wrap=$('ouraC').parentElement;
     attachHover(wrap,'ouraC','ouraO', r=>({val:fmt(r.value,0),sub:'Readiness'}));
   }
+
+  const hasStrain = d && d.whoop_strain && d.whoop_strain.length;
+  $('strainCard').style.display = hasStrain ? '' : 'none';
+  if (hasStrain) {
+    const a = avg(d.whoop_strain.map(r=>r.value).filter(v=>v));
+    const el=$('strainVal'); if(el) countUp(el,a,1);
+    drawLine('strainC','strainO', d.whoop_strain, {color:C.strain, unit:' / 21', minY:0, maxY:21});
+    const wrap=$('strainC').parentElement;
+    attachHover(wrap,'strainC','strainO', r=>({val:fmt(r.value,1),sub:'Day Strain'}));
+  }
 }
 
 async function loadWorkouts() {
@@ -1705,14 +2135,41 @@ async function loadWorkouts() {
   renderWorkouts(d);
 }
 
+async function loadTemperature() {
+  const d = await get(`/api/temperature?days=${D.temp}`);
+  cache.temp = d;
+  const card = $('tempCard');
+  const hasOura  = d && d.oura  && d.oura.length;
+  const hasWhoop = d && d.whoop && d.whoop.length;
+  if (!hasOura && !hasWhoop) { if(card) card.style.display='none'; return; }
+  if(card) card.style.display='';
+  if (hasOura) {
+    // Oura temperature deviation — show deviation from personal baseline
+    const a = avg(d.oura.map(r=>r.value).filter(v=>v!=null));
+    const el=$('tempVal'); if(el) countUp(el,a,2);
+    const lbl=$('tempLbl'); if(lbl) lbl.textContent='deviation °C (Oura)';
+    drawLine('tempC','tempO', d.oura, {color:C.temp, unit:'°C', minY:-2, maxY:2});
+    const wrap=$('tempC').parentElement;
+    attachHover(wrap,'tempC','tempO', r=>({val:(r.value>=0?'+':'')+fmt(r.value,2)+'°C',sub:'Temp deviation'}));
+  } else if (hasWhoop) {
+    // Whoop skin temperature — absolute Celsius
+    const a = avg(d.whoop.map(r=>r.value).filter(v=>v));
+    const el=$('tempVal'); if(el) countUp(el,a,1);
+    const lbl=$('tempLbl'); if(lbl) lbl.textContent='skin temp °C (Whoop)';
+    drawLine('tempC','tempO', d.whoop, {color:C.temp, unit:'°C'});
+    const wrap=$('tempC').parentElement;
+    attachHover(wrap,'tempC','tempO', r=>({val:fmt(r.value,1)+'°C',sub:'Skin temp'}));
+  }
+}
+
 function loadAll() {
-  loadBloodOxygen(); loadHRV(); loadRHR(); loadRespiration(); loadSleep(); loadRecovery(); loadWorkouts();
+  loadBloodOxygen(); loadHRV(); loadRHR(); loadHR(); loadRespiration(); loadSleep(); loadRecovery(); loadWorkouts(); loadTemperature();
 }
 
 // ── Per-card range buttons ────────────────────────────────────────────────────
 const LOADERS = {
-  spo2:loadBloodOxygen, hrv:loadHRV, rhr:loadRHR,
-  resp:loadRespiration, sleep:loadSleep, rec:loadRecovery, wo:loadWorkouts,
+  spo2:loadBloodOxygen, hrv:loadHRV, rhr:loadRHR, hr:loadHR,
+  resp:loadRespiration, sleep:loadSleep, rec:loadRecovery, wo:loadWorkouts, temp:loadTemperature,
 };
 document.querySelectorAll('.crange').forEach(group=>{
   group.querySelectorAll('.crbtn').forEach(btn=>{
@@ -1739,11 +2196,17 @@ window.addEventListener('resize', ()=>{
     if(cache.spo2)   drawLine('spo2C','spo2O',  cache.spo2, {color:C.spo2, unit:'%', minY:90, maxY:100});
     if(cache.hrv)    drawLine('hrvC','hrvO',    cache.hrv,  {color:C.hrv,  unit:'ms', minY:0});
     if(cache.rhr)    drawLine('rhrC','rhrO',    cache.rhr,  {color:C.rhr,  unit:'bpm'});
+    if(cache.hr?.length) drawHRBand('hrC','hrO', cache.hr);
     if(cache.resp)   drawLine('respC','respO',  cache.resp, {color:C.resp, unit:' br/min'});
     if(cache.sleep)  drawSleep('slC', cache.sleep);
     if(cache.rec){
-      if(cache.rec.whoop?.length) drawLine('whoopC','whoopO',cache.rec.whoop,{color:C.rec,  unit:'%', minY:0, maxY:100});
-      if(cache.rec.oura?.length)  drawLine('ouraC','ouraO',  cache.rec.oura, {color:C.read, unit:'',  minY:0, maxY:100});
+      if(cache.rec.whoop?.length)        drawLine('whoopC','whoopO', cache.rec.whoop,        {color:C.rec,    unit:'%', minY:0, maxY:100});
+      if(cache.rec.oura?.length)         drawLine('ouraC','ouraO',   cache.rec.oura,         {color:C.read,   unit:'',  minY:0, maxY:100});
+      if(cache.rec.whoop_strain?.length) drawLine('strainC','strainO',cache.rec.whoop_strain,{color:C.strain, unit:' / 21', minY:0, maxY:21});
+    }
+    if(cache.temp){
+      if(cache.temp.oura?.length)  drawLine('tempC','tempO', cache.temp.oura,  {color:C.temp, unit:'°C', minY:-2, maxY:2});
+      else if(cache.temp.whoop?.length) drawLine('tempC','tempO', cache.temp.whoop, {color:C.temp, unit:'°C'});
     }
   }, 120);
 });
@@ -1792,6 +2255,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             "/api/blood-oxygen":  lambda: api_blood_oxygen(d),
             "/api/respiration":   lambda: api_respiration(d),
             "/api/recovery":      lambda: api_recovery(d),
+            "/api/temperature":   lambda: api_temperature(d),
             "/api/workouts":      lambda: api_workouts(d),
             "/api/debug/sleep":   lambda: api_debug_sleep(),
             "/api/workout-hr":    lambda: api_workout_hr(start, end),
