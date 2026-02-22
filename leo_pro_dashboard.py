@@ -489,6 +489,22 @@ def api_debug_sleep():
         return {"error": str(e)}
 
 
+def api_sleep_stages(date=""):
+    """Individual sleep stage segments for a specific night (for hypnogram hover)."""
+    if not date:
+        return []
+    return _q("""
+        SELECT stage, start, "end",
+               ROUND((julianday("end") - julianday(start)) * 24, 4) AS hours
+        FROM sleep
+        WHERE date(recorded_at) = ?
+          AND stage IN ('awake','rem','deep','core','light','asleep','in_bed')
+          AND start IS NOT NULL
+          AND "end" IS NOT NULL
+        ORDER BY start
+    """, (date,))
+
+
 def api_workout_hr(start, end):
     """Heart rate samples recorded during a workout window.
     Uses datetime() for timezone-safe comparison (handles -05:00 vs Z offsets)."""
@@ -1934,14 +1950,23 @@ function attachSleepHover(data) {
   if (!canvas || !overlay) return;
   const nights = data.slice(-Math.min(30, data.length));
   const wrap = canvas.parentElement;
-  let lastIdx = -1;
 
-  const STAGES = [
-    { key:'deep',  color:'#5e5ce6',             label:'Deep'  },
-    { key:'rem',   color:'#bf5af2',             label:'REM'   },
-    { key:'light', color:'#32ade6',             label:'Light' },
-    { key:'awake', color:'rgba(255,149,0,0.85)', label:'Awake' },
+  // ── Stage config ───────────────────────────────────────────────────────────
+  const STAGE_ROW   = { awake:0, rem:1, core:2, light:2, asleep:2, in_bed:2, deep:3 };
+  const STAGE_COLOR = { awake:'#ff6b6b', rem:'#32ade6', core:'#5e8ef7',
+                        light:'#5e8ef7', asleep:'#5e8ef7', in_bed:'#5e8ef7', deep:'#5e5ce6' };
+  const ROW_LABELS  = ['Awake','REM','Core','Deep'];
+  const ROW_COLORS  = ['#ff6b6b','#32ade6','#5e8ef7','#5e5ce6'];
+  // Totals footer colours (match aggregated keys in the nightly data)
+  const TOTAL_COLS  = [
+    { key:'deep',  color:'#5e5ce6', label:'Deep'  },
+    { key:'rem',   color:'#32ade6', label:'REM'   },
+    { key:'light', color:'#5e8ef7', label:'Core'  },
+    { key:'awake', color:'#ff6b6b', label:'Awake' },
   ];
+
+  const stagesCache = {};  // date → segments[] | null (pending)
+  let currentIdx = -1;
 
   function getIdx(e) {
     const rect = canvas.getBoundingClientRect();
@@ -1951,122 +1976,198 @@ function attachSleepHover(data) {
     return Math.floor((mx - 36) / (barW + 3));
   }
 
-  function rrect(cx, x, y, rw, rh, r) {
-    cx.beginPath();
-    cx.moveTo(x+r, y);
-    cx.lineTo(x+rw-r, y); cx.quadraticCurveTo(x+rw, y, x+rw, y+r);
-    cx.lineTo(x+rw, y+rh-r); cx.quadraticCurveTo(x+rw, y+rh, x+rw-r, y+rh);
-    cx.lineTo(x+r, y+rh); cx.quadraticCurveTo(x, y+rh, x, y+rh-r);
-    cx.lineTo(x, y+r); cx.quadraticCurveTo(x, y, x+r, y);
-    cx.closePath();
+  function rrect(ctx, x, y, rw, rh, r) {
+    r = Math.min(r, rw/2, rh/2);
+    ctx.beginPath();
+    ctx.moveTo(x+r, y);
+    ctx.lineTo(x+rw-r, y); ctx.quadraticCurveTo(x+rw, y, x+rw, y+r);
+    ctx.lineTo(x+rw, y+rh-r); ctx.quadraticCurveTo(x+rw, y+rh, x+rw-r, y+rh);
+    ctx.lineTo(x+r, y+rh); ctx.quadraticCurveTo(x, y+rh, x, y+rh-r);
+    ctx.lineTo(x, y+r); ctx.quadraticCurveTo(x, y, x+r, y);
+    ctx.closePath();
   }
 
   function hm(v) {
-    const hrs = Math.floor(v), min = Math.round((v - hrs) * 60);
-    return min > 0 ? `${hrs}h ${min}m` : `${hrs}h`;
+    const h = Math.floor(v), m = Math.round((v - h) * 60);
+    return m > 0 ? `${h}h ${m}m` : `${h}h`;
   }
 
-  function draw(idx) {
+  function fmt12(iso) {
+    const d = new Date(iso);
+    let h = d.getHours(), m = d.getMinutes();
+    const ap = h >= 12 ? 'PM' : 'AM';
+    h = h % 12 || 12;
+    return `${h}${m ? ':'+String(m).padStart(2,'0') : ''}${ap}`;
+  }
+
+  function draw(idx, segs) {
     const dpr = window.devicePixelRatio || 1;
-    const W = overlay.offsetWidth || canvas.offsetWidth || 600;
-    const H = overlay.offsetHeight || canvas.offsetHeight || 150;
-    overlay.width = W * dpr; overlay.height = H * dpr;
-    overlay.style.width = W + 'px'; overlay.style.height = H + 'px';
-    const cx = overlay.getContext('2d'); cx.scale(dpr, dpr);
-    cx.clearRect(0, 0, W, H);
+    const W   = overlay.offsetWidth  || canvas.offsetWidth  || 600;
+    const H   = overlay.offsetHeight || canvas.offsetHeight || 150;
+    overlay.width  = W * dpr; overlay.height = H * dpr;
+    overlay.style.width = W+'px'; overlay.style.height = H+'px';
+    const ctx = overlay.getContext('2d'); ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, W, H);
     if (idx < 0 || idx >= nights.length) return;
 
-    const PAD = {l:36, r:10, t:10, b:26};
-    const cw = W - PAD.l - PAD.r, ch = H - PAD.t - PAD.b;
+    // ── Highlight hovered bar on main chart ────────────────────────────────
+    const PAD  = {l:36, r:10, t:10, b:26};
+    const cw   = W - PAD.l - PAD.r, ch = H - PAD.t - PAD.b;
     const barW = (cw - (nights.length-1)*3) / nights.length;
     const barX = PAD.l + idx*(barW+3);
-
-    // Hovered bar highlight
-    cx.fillStyle = 'rgba(255,255,255,0.08)';
-    rrect(cx, barX-1, PAD.t, barW+2, ch, 3);
-    cx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.07)';
+    rrect(ctx, barX-1, PAD.t, barW+2, ch, 3); ctx.fill();
 
     const n = nights[idx];
     const sleepH = (n.deep||0) + (n.rem||0) + (n.light||0);
-    const totalH  = sleepH + (n.awake||0);
 
-    // ── Card ─────────────────────────────────────────────────────────────────
-    const CW = 200, CH = 90;
-    // Flip left/right based on which side has more room
+    // ── Card geometry ──────────────────────────────────────────────────────
+    const CW = 350, CH = 210;
     const barCx = barX + barW / 2;
     let cx0 = barCx > W / 2 ? barX - CW - 6 : barX + barW + 6;
     cx0 = Math.max(4, Math.min(cx0, W - CW - 4));
-    const cy0 = PAD.t + Math.max(0, (ch - CH) / 2);  // centred in chart area
+    const cy0 = Math.max(4, Math.min(PAD.t + (ch - CH) / 2, H - CH - 4));
 
-    // Background
-    cx.fillStyle = 'rgba(10,10,22,0.95)';
-    rrect(cx, cx0, cy0, CW, CH, 9); cx.fill();
-    cx.strokeStyle = 'rgba(255,255,255,0.08)'; cx.lineWidth = 1;
-    rrect(cx, cx0, cy0, CW, CH, 9); cx.stroke();
+    // Card background + border
+    ctx.fillStyle = 'rgba(8,8,20,0.97)';
+    rrect(ctx, cx0, cy0, CW, CH, 12); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.09)'; ctx.lineWidth = 1;
+    rrect(ctx, cx0, cy0, CW, CH, 12); ctx.stroke();
 
-    // Date
-    cx.fillStyle = 'rgba(255,255,255,0.4)';
-    cx.font = '10px -apple-system,sans-serif';
-    cx.textAlign = 'left'; cx.textBaseline = 'top';
-    cx.fillText(fmtDateLong(n.date), cx0+11, cy0+9);
+    // ── Header ─────────────────────────────────────────────────────────────
+    ctx.fillStyle = 'rgba(255,255,255,0.38)';
+    ctx.font = '10px -apple-system,sans-serif';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText(fmtDateLong(n.date), cx0+13, cy0+11);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 16px -apple-system,sans-serif';
+    ctx.fillText(hm(sleepH) + ' sleep', cx0+13, cy0+25);
 
-    // Total sleep
-    cx.fillStyle = '#fff';
-    cx.font = 'bold 16px -apple-system,sans-serif';
-    cx.fillText(hm(sleepH), cx0+11, cy0+22);
+    // ── Hypnogram area ─────────────────────────────────────────────────────
+    const HP = { l: cx0+54, r: cx0+CW-14, t: cy0+52, b: cy0+CH-36 };
+    const HW = HP.r - HP.l, HH = HP.b - HP.t;
+    const rowH = HH / 4;
 
-    // ── Proportional stage bar ────────────────────────────────────────────────
-    const SBX = cx0+11, SBY = cy0+46, SBW = CW-22, SBH = 8;
-    cx.save();
-    rrect(cx, SBX, SBY, SBW, SBH, 4); cx.clip();
-    let sx = SBX;
-    STAGES.forEach(s => {
-      const val = n[s.key] || 0;
-      if (!val || !totalH) return;
-      const sw = (val / totalH) * SBW;
-      if (sw < 0.5) return;
-      cx.fillStyle = s.color;
-      cx.fillRect(sx, SBY, sw, SBH);
-      sx += sw;
-    });
-    cx.restore();
+    if (!segs || !segs.length) {
+      // Fallback: proportional stage strip (no raw segments available)
+      const totalH = sleepH + (n.awake||0) || 1;
+      let sx = HP.l;
+      ctx.save();
+      rrect(ctx, HP.l, HP.t + HH*0.3, HW, HH*0.4, 5); ctx.clip();
+      TOTAL_COLS.forEach(c => {
+        const sw = ((n[c.key]||0) / totalH) * HW;
+        if (sw < 0.5) return;
+        ctx.fillStyle = c.color + 'cc';
+        ctx.fillRect(sx, HP.t + HH*0.3, sw, HH*0.4); sx += sw;
+      });
+      ctx.restore();
+      ctx.fillStyle = 'rgba(255,255,255,0.2)';
+      ctx.font = '10px -apple-system,sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('No stage detail in database', HP.l + HW/2, HP.t + HH/2);
+    } else {
+      // ── Row labels + dashed guide lines ──────────────────────────────────
+      ROW_LABELS.forEach((lbl, r) => {
+        const ly = HP.t + r * rowH + rowH / 2;
+        ctx.setLineDash([2,5]); ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(HP.l, ly); ctx.lineTo(HP.r, ly); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = ROW_COLORS[r];
+        ctx.font = 'bold 8px -apple-system,sans-serif';
+        ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+        ctx.fillText(lbl, HP.l - 5, ly);
+      });
 
-    // ── Stage breakdown 2-column grid ─────────────────────────────────────────
-    const COL2 = cx0 + 11 + (CW - 22) / 2 + 4;
-    STAGES.forEach((s, i) => {
-      const col = i % 2, row = Math.floor(i / 2);
-      const gx = col === 0 ? cx0+11 : COL2;
-      const gy = cy0+60 + row*16;
-      const val = n[s.key] || 0;
+      // ── Time mapping ──────────────────────────────────────────────────────
+      const t0    = new Date(segs[0].start).getTime();
+      const t1    = new Date(segs[segs.length-1].end).getTime();
+      const tSpan = (t1 - t0) || 1;
+      const tx    = t => HP.l + ((t - t0) / tSpan) * HW;
+      const midY  = r => HP.t + r * rowH + rowH / 2;
 
-      // Coloured dot
-      cx.fillStyle = s.color;
-      cx.beginPath(); cx.arc(gx+4, gy+5, 3, 0, Math.PI*2); cx.fill();
+      // Bezier connectors between consecutive segments (drawn behind segments)
+      ctx.lineWidth = 1.5;
+      for (let i = 0; i < segs.length - 1; i++) {
+        const s = segs[i], sn = segs[i+1];
+        const r  = STAGE_ROW[s.stage]  ?? 2;
+        const rn = STAGE_ROW[sn.stage] ?? 2;
+        if (r === rn) continue;
+        const x1 = tx(new Date(s.end).getTime());
+        const x2 = tx(new Date(sn.start).getTime());
+        const mx  = (x1 + x2) / 2;
+        ctx.strokeStyle = (STAGE_COLOR[s.stage] || '#5e8ef7') + '55';
+        ctx.beginPath(); ctx.moveTo(x1, midY(r));
+        ctx.bezierCurveTo(mx, midY(r), mx, midY(rn), x2, midY(rn)); ctx.stroke();
+      }
 
-      // Stage name
-      cx.fillStyle = 'rgba(255,255,255,0.38)';
-      cx.font = '10px -apple-system,sans-serif';
-      cx.textAlign = 'left'; cx.textBaseline = 'top';
-      cx.fillText(s.label, gx+12, gy);
+      // Segment blocks
+      segs.forEach(s => {
+        const r     = STAGE_ROW[s.stage] ?? 2;
+        const color = STAGE_COLOR[s.stage] || '#5e8ef7';
+        const x1    = tx(new Date(s.start).getTime());
+        const x2    = tx(new Date(s.end).getTime());
+        const segW  = Math.max(x2 - x1, 2);
+        const sy    = HP.t + r * rowH + rowH * 0.18;
+        const sh    = rowH * 0.64;
+        ctx.fillStyle = color + 'cc';
+        rrect(ctx, x1, sy, segW, sh, Math.min(3, segW/2)); ctx.fill();
+        // Bright top highlight
+        ctx.fillStyle = color;
+        ctx.fillRect(x1, sy, segW, Math.min(2, sh));
+      });
 
-      // Duration (right-aligned to its column)
-      cx.fillStyle = '#fff';
-      cx.font = 'bold 10px -apple-system,sans-serif';
-      cx.textAlign = 'right';
-      const rightEdge = col === 0 ? COL2 - 6 : cx0 + CW - 11;
-      cx.fillText(val > 0 ? hm(val) : '—', rightEdge, gy);
+      // Time axis labels
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.font = '8px -apple-system,sans-serif';
+      ctx.textAlign = 'left';  ctx.textBaseline = 'top';
+      ctx.fillText(fmt12(segs[0].start),               HP.l,      HP.b+5);
+      ctx.textAlign = 'right';
+      ctx.fillText(fmt12(segs[segs.length-1].end),     HP.r,      HP.b+5);
+    }
+
+    // ── Stage totals footer ────────────────────────────────────────────────
+    const activeCols = TOTAL_COLS.filter(c => (n[c.key]||0) > 0);
+    const colW = (CW - 24) / Math.max(activeCols.length, 1);
+    activeCols.forEach((c, i) => {
+      const gx = cx0 + 12 + i * colW;
+      const gy = cy0 + CH - 28;
+      ctx.fillStyle = c.color;
+      ctx.beginPath(); ctx.arc(gx+5, gy+5, 3, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.font = '9px -apple-system,sans-serif';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText(c.label, gx+12, gy);
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 9px -apple-system,sans-serif';
+      ctx.fillText(hm(n[c.key]), gx+12, gy+11);
     });
   }
 
-  // Suppress DOM tooltip while hovering over the sleep chart
+  // ── Event handlers ─────────────────────────────────────────────────────────
   const domTT = $('tt');
-  wrap.addEventListener('mousemove', e => {
+
+  function onMove(e) {
     if (domTT) domTT.style.display = 'none';
     const idx = getIdx(e);
-    if (idx < 0 || idx >= nights.length) { draw(-1); lastIdx = -1; return; }
-    if (idx !== lastIdx) { draw(idx); lastIdx = idx; }
-  });
-  wrap.addEventListener('mouseleave', () => { draw(-1); lastIdx = -1; });
+    if (idx < 0 || idx >= nights.length) { draw(-1, null); currentIdx = -1; return; }
+    if (idx === currentIdx) return;
+    currentIdx = idx;
+    const n    = nights[idx];
+    const segs = stagesCache[n.date];
+    if (segs !== undefined) {
+      draw(idx, segs);  // already cached (or confirmed empty)
+    } else {
+      draw(idx, null);  // show card immediately with totals while fetching
+      stagesCache[n.date] = null;  // mark pending
+      get(`/api/sleep-stages?date=${n.date}`).then(s => {
+        stagesCache[n.date] = (s && s.length) ? s : [];
+        if (currentIdx === idx) draw(idx, stagesCache[n.date]);
+      });
+    }
+  }
+
+  wrap.addEventListener('mousemove', onMove);
+  wrap.addEventListener('mouseleave', () => { draw(-1, null); currentIdx = -1; });
 }
 
 async function loadSleep() {
@@ -2243,9 +2344,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         p = urllib.parse.urlparse(self.path)
         qs = urllib.parse.parse_qs(p.query)
-        d  = int(qs.get("days", ["30"])[0])
+        d     = int(qs.get("days",  ["30"])[0])
         start = qs.get("start", [""])[0]
         end   = qs.get("end",   [""])[0]
+        date  = qs.get("date",  [""])[0]
         routes = {
             "/api/summary":       lambda: api_summary(),
             "/api/heart-rate":    lambda: api_heart_rate(d),
@@ -2258,6 +2360,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             "/api/temperature":   lambda: api_temperature(d),
             "/api/workouts":      lambda: api_workouts(d),
             "/api/debug/sleep":   lambda: api_debug_sleep(),
+            "/api/sleep-stages":  lambda: api_sleep_stages(date),
             "/api/workout-hr":    lambda: api_workout_hr(start, end),
             "/api/workout-route": lambda: api_workout_route(start),
         }
