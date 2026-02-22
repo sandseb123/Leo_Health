@@ -490,19 +490,30 @@ def api_debug_sleep():
 
 
 def api_sleep_stages(date=""):
-    """Individual sleep stage segments for a specific night (for hypnogram hover)."""
+    """Individual sleep stage segments for a specific night (for hypnogram hover).
+
+    Handles both pre-iOS-16 stage names (deep, rem, core) and post-iOS-16
+    names (asleepdeep, asleeprem, asleepcore, asleepunspecified).
+    Uses a ±12 h window around midnight so sessions starting before midnight
+    are still captured under the correct date.
+    """
     if not date:
         return []
     return _q("""
         SELECT stage, start, "end",
                ROUND((julianday("end") - julianday(start)) * 24, 4) AS hours
         FROM sleep
-        WHERE date(recorded_at) = ?
-          AND stage IN ('awake','rem','deep','core','light','asleep','in_bed')
+        WHERE start >= datetime(?, '-12 hours')
+          AND start <  datetime(?, '+12 hours')
+          AND stage IN (
+              'awake',
+              'rem',   'deep',   'core',   'light',   'asleep',   'in_bed',
+              'asleeprem','asleepdeep','asleepcore','asleepunspecified'
+          )
           AND start IS NOT NULL
           AND "end" IS NOT NULL
         ORDER BY start
-    """, (date,))
+    """, (date, date))
 
 
 def api_workout_hr(start, end):
@@ -1951,10 +1962,22 @@ function attachSleepHover(data) {
   const nights = data.slice(-Math.min(30, data.length));
   const wrap = canvas.parentElement;
 
-  // ── Stage config ───────────────────────────────────────────────────────────
-  const STAGE_ROW   = { awake:0, rem:1, core:2, light:2, asleep:2, in_bed:2, deep:3 };
-  const STAGE_COLOR = { awake:'#ff6b6b', rem:'#32ade6', core:'#5e8ef7',
-                        light:'#5e8ef7', asleep:'#5e8ef7', in_bed:'#5e8ef7', deep:'#5e5ce6' };
+  // ── Stage config ─────────────────────────────────────────────────────────
+  // Covers both pre-iOS-16 names (deep/rem/core) and post-iOS-16 names
+  // (asleepdeep / asleeprem / asleepcore / asleepunspecified).
+  const STAGE_ROW = {
+    awake:0,
+    rem:1,  asleeprem:1,
+    core:2, light:2, asleep:2, in_bed:2, asleepcore:2, asleepunspecified:2,
+    deep:3, asleepdeep:3,
+  };
+  const STAGE_COLOR = {
+    awake:'#ff6b6b',
+    rem:'#32ade6',   asleeprem:'#32ade6',
+    core:'#5e8ef7',  light:'#5e8ef7', asleep:'#5e8ef7', in_bed:'#5e8ef7',
+    asleepcore:'#5e8ef7', asleepunspecified:'#5e8ef7',
+    deep:'#5e5ce6',  asleepdeep:'#5e5ce6',
+  };
   const ROW_LABELS  = ['Awake','REM','Core','Deep'];
   const ROW_COLORS  = ['#ff6b6b','#32ade6','#5e8ef7','#5e5ce6'];
   // Totals footer colours (match aggregated keys in the nightly data)
