@@ -1641,23 +1641,23 @@ function drawRouteMap(canvasId, points, elevCanvasId) {
     ctx.beginPath(); ctx.moveTo(PAD, gy); ctx.lineTo(W-PAD, gy); ctx.stroke();
   });
 
-  // Pace calculation per segment (min/km)
-  function haversineKm(la1, lo1, la2, lo2) {
-    const R = 6371, dLa = (la2-la1)*Math.PI/180, dLo = (lo2-lo1)*Math.PI/180;
+  // Pace calculation per segment (min/mi)
+  function haversineMi(la1, lo1, la2, lo2) {
+    const R = 3958.8, dLa = (la2-la1)*Math.PI/180, dLo = (lo2-lo1)*Math.PI/180;
     const a = Math.sin(dLa/2)**2 + Math.cos(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.sin(dLo/2)**2;
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
   }
   const rawPaces = points.slice(1).map((p,i) => {
     const dt = p.time && points[i].time ? (new Date(p.time)-new Date(points[i].time))/60000 : 0;
-    const km = haversineKm(+points[i].lat, +points[i].lon, +p.lat, +p.lon);
-    return (km > 0.0001 && dt > 0 && dt < 5) ? dt/km : null;
+    const mi = haversineMi(+points[i].lat, +points[i].lon, +p.lat, +p.lon);
+    return (mi > 0.00006 && dt > 0 && dt < 5) ? dt/mi : null;
   });
   // Smooth with a 5-sample running average
   const pSmooth = rawPaces.map((_,i) => {
     const win = rawPaces.slice(Math.max(0,i-2), i+3).filter(v=>v!==null);
     return win.length ? win.reduce((a,b)=>a+b,0)/win.length : null;
   });
-  const valid  = pSmooth.filter(p => p !== null && p > 2 && p < 20);
+  const valid  = pSmooth.filter(p => p !== null && p > 3 && p < 30);
   const pFast  = valid.length ? valid.slice().sort((a,b)=>a-b)[Math.floor(valid.length*0.05)] : 4;
   const pSlow  = valid.length ? valid.slice().sort((a,b)=>a-b)[Math.floor(valid.length*0.95)] : 8;
 
@@ -1704,9 +1704,9 @@ function drawRouteMap(canvasId, points, elevCanvasId) {
   ctx.fillStyle = 'rgba(255,255,255,0.4)';
   ctx.font = '8px -apple-system,sans-serif';
   ctx.textAlign = 'left';  ctx.textBaseline = 'bottom';
-  ctx.fillText(`${fmtPace(pFast)}/km`, PAD, H-PAD-17);
+  ctx.fillText(`${fmtPace(pFast)}/mi`, PAD, H-PAD-17);
   ctx.textAlign = 'right';
-  ctx.fillText(`${fmtPace(pSlow)}/km`, PAD+80, H-PAD-17);
+  ctx.fillText(`${fmtPace(pSlow)}/mi`, PAD+80, H-PAD-17);
 
   if (elevCanvasId) drawElevationProfile(elevCanvasId, points);
 }
@@ -1715,7 +1715,7 @@ function drawRouteMap(canvasId, points, elevCanvasId) {
 function drawElevationProfile(canvasId, points) {
   const c = $(canvasId);
   if (!c) return;
-  const alts = points.map(p => +p.alt).filter(a => !isNaN(a) && a > -500 && a < 9000);
+  const alts = points.map(p => +p.alt * 3.28084).filter(a => !isNaN(a) && a > -1640 && a < 29500);
   if (alts.length < 2) { c.style.display='none'; return; }
   const dpr = window.devicePixelRatio || 1;
   const W   = c.offsetWidth || 340;
@@ -1749,7 +1749,7 @@ function drawElevationProfile(canvasId, points) {
   for (let i = 1; i < alts.length; i++) if (alts[i] > alts[i-1]) gain += alts[i]-alts[i-1];
   ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.font = '9px -apple-system,sans-serif';
   ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
-  ctx.fillText(`↑ ${Math.round(gain)} m gain  ·  ${Math.round(mn)}–${Math.round(mx)} m alt`, PAD.l+4, H-2);
+  ctx.fillText(`↑ ${Math.round(gain)} ft gain  ·  ${Math.round(mn)}–${Math.round(mx)} ft alt`, PAD.l+4, H-2);
   ctx.textAlign = 'right';
   ctx.fillText('Elevation', W-PAD.r-4, H-2);
 
@@ -1838,44 +1838,44 @@ async function loadWoDetail(el, idx) {
       requestAnimationFrame(() => drawRouteMap(`woRtC${idx}`, route, `woElC${idx}`));
 
       // ── Elevation gain ────────────────────────────────────────────────────
-      const alts = route.map(p => +p.alt).filter(a => !isNaN(a) && a > -500 && a < 9000);
+      const alts = route.map(p => +p.alt * 3.28084).filter(a => !isNaN(a) && a > -1640 && a < 29500);
       if (alts.length >= 2) {
         let gain = 0;
         for (let i = 1; i < alts.length; i++) if (alts[i] > alts[i-1]) gain += alts[i]-alts[i-1];
         const elevEl = $(`woElev${idx}`);
         if (elevEl) elevEl.innerHTML =
-          `<div class="wo-stat-val">${Math.round(gain)}<span style="font-size:10px;font-weight:400"> m</span></div><div class="wo-stat-lbl">Elevation Gain</div>`;
+          `<div class="wo-stat-val">${Math.round(gain)}<span style="font-size:10px;font-weight:400"> ft</span></div><div class="wo-stat-lbl">Elevation Gain</div>`;
       }
 
-      // ── Per-km splits + best split ────────────────────────────────────────
-      function haversineKm(la1,lo1,la2,lo2) {
-        const R=6371, dLa=(la2-la1)*Math.PI/180, dLo=(lo2-lo1)*Math.PI/180;
+      // ── Per-mile splits + best split ──────────────────────────────────────
+      function haversineMi(la1,lo1,la2,lo2) {
+        const R=3958.8, dLa=(la2-la1)*Math.PI/180, dLo=(lo2-lo1)*Math.PI/180;
         const a=Math.sin(dLa/2)**2+Math.cos(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.sin(dLo/2)**2;
         return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
       }
-      const kmSplits = [];   // pace in min/km per each full km
-      let cumDist = 0, kmStart = 0, kmStartDist = 0;
+      const miSplits = [];   // pace in min/mi per each full mile
+      let cumDist = 0, miStart = 0, miStartDist = 0;
       if (route[0].time) {
         for (let i = 1; i < route.length; i++) {
-          cumDist += haversineKm(+route[i-1].lat,+route[i-1].lon,+route[i].lat,+route[i].lon);
-          while (cumDist - kmStartDist >= 1.0) {
-            const dt = (new Date(route[i].time) - new Date(route[kmStart].time)) / 60000;
-            const pac = dt / (cumDist - kmStartDist);
-            if (pac > 1.5 && pac < 20) kmSplits.push(pac);
-            kmStartDist += 1.0; kmStart = i;
+          cumDist += haversineMi(+route[i-1].lat,+route[i-1].lon,+route[i].lat,+route[i].lon);
+          while (cumDist - miStartDist >= 1.0) {
+            const dt = (new Date(route[i].time) - new Date(route[miStart].time)) / 60000;
+            const pac = dt / (cumDist - miStartDist);
+            if (pac > 2.5 && pac < 30) miSplits.push(pac);
+            miStartDist += 1.0; miStart = i;
           }
         }
       }
       // Best split stat
-      if (kmSplits.length) {
-        const bestPace = Math.min(...kmSplits);
+      if (miSplits.length) {
+        const bestPace = Math.min(...miSplits);
         const splitEl = $(`woSplit${idx}`);
         if (splitEl) splitEl.innerHTML =
-          `<div class="wo-stat-val">${Math.floor(bestPace)}:${String(Math.round((bestPace%1)*60)).padStart(2,'0')}<span style="font-size:10px;font-weight:400"> /km</span></div><div class="wo-stat-lbl">Best Split</div>`;
+          `<div class="wo-stat-val">${Math.floor(bestPace)}:${String(Math.round((bestPace%1)*60)).padStart(2,'0')}<span style="font-size:10px;font-weight:400"> /mi</span></div><div class="wo-stat-lbl">Best Split</div>`;
       }
-      // Per-km splits bar chart
-      if (kmSplits.length >= 2) {
-        const slowest = Math.max(...kmSplits), fastest = Math.min(...kmSplits);
+      // Per-mile splits bar chart
+      if (miSplits.length >= 2) {
+        const slowest = Math.max(...miSplits), fastest = Math.min(...miSplits);
         const range = slowest - fastest || 1;
         const splitsEl = $(`woSplits${idx}`);
         if (splitsEl) {
@@ -1885,11 +1885,11 @@ async function loadWoDetail(el, idx) {
             const r = Math.round(t*255), g = Math.round((1-t)*255);
             return `rgb(${r},${g},60)`;
           };
-          splitsEl.innerHTML = `<div class="wo-splits-title">Km Splits</div>` +
-            kmSplits.map((p,i) => {
+          splitsEl.innerHTML = `<div class="wo-splits-title">Mile Splits</div>` +
+            miSplits.map((p,i) => {
               const w = Math.round((1-(p-fastest)/range)*100);
               return `<div class="wo-split-row">
-                <div class="wo-split-lbl">km ${i+1}</div>
+                <div class="wo-split-lbl">mi ${i+1}</div>
                 <div class="wo-split-bar-track"><div class="wo-split-bar" style="width:${w}%;background:${hue(p)}"></div></div>
                 <div class="wo-split-pace">${paceStr(p)}</div>
               </div>`;
@@ -1920,10 +1920,10 @@ function renderWorkouts(data) {
     const name = woName(w.activity);
     const dur  = w.duration  ? Math.round(w.duration) + 'm'          : '';
     const cals = w.calories  ? Math.round(w.calories) + ' kcal'      : '';
-    const dist = w.distance_km ? (+w.distance_km).toFixed(2) + ' km' : '';
+    const dist = w.distance_km ? (+w.distance_km * 0.621371).toFixed(2) + ' mi' : '';
     const pace = (w.duration && w.distance_km && w.distance_km > 0)
-                   ? Math.floor(w.duration / w.distance_km) + ':' +
-                     String(Math.round((w.duration / w.distance_km % 1) * 60)).padStart(2,'0') + ' /km'
+                   ? (() => { const p = w.duration / (w.distance_km * 0.621371);
+                              return Math.floor(p) + ':' + String(Math.round((p%1)*60)).padStart(2,'0') + ' /mi'; })()
                    : '';
     const isRunAct   = key === 'running' || key === 'indoorrunning';
     const isOutdoor  = !!w.has_route;                     // true = GPS exists
