@@ -737,6 +737,9 @@ canvas{display:block;width:100%}
 .wo-route-wrap{width:130px;flex-shrink:0}
 .wo-route-wrap svg{display:block;width:130px;height:130px;border-radius:8px}
 .wo-route-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px}
+.wo-route-section{padding:0 14px 14px}
+.wo-route-canvas{display:block;width:100%;height:200px;border-radius:10px}
+.wo-elev-canvas{display:block;width:100%;height:52px;margin-top:4px;border-radius:6px}
 /* HR Zones bar */
 .wo-zones{padding:4px 14px 14px 14px}
 .wo-zones-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:7px;display:flex;align-items:center;gap:8px}
@@ -1546,31 +1549,155 @@ function drawWoHR(canvasId, data) {
   c.style.cursor = 'crosshair';
 }
 
-// ── Workout GPS route SVG ─────────────────────────────────────────────────────
-function drawWoRoute(svgId, points) {
-  const svg = $(svgId);
-  if (!svg || !points || points.length < 2) return;
+// ── Workout GPS map — pace-coloured canvas ────────────────────────────────────
+function drawRouteMap(canvasId, points, elevCanvasId) {
+  const c = $(canvasId);
+  if (!c || !points || points.length < 2) return;
+  const dpr = window.devicePixelRatio || 1;
+  const W   = c.offsetWidth || 340;
+  const H   = 200;
+  c.width   = W * dpr; c.height = H * dpr;
+  c.style.width = W + 'px'; c.style.height = H + 'px';
+  const ctx = c.getContext('2d');
+  ctx.scale(dpr, dpr);
+
   const lats = points.map(p => +p.lat), lons = points.map(p => +p.lon);
   const minLat = Math.min(...lats), maxLat = Math.max(...lats);
   const minLon = Math.min(...lons), maxLon = Math.max(...lons);
   const latR = maxLat - minLat || 0.001, lonR = maxLon - minLon || 0.001;
-  const W = 130, H = 130, PAD = 10;
-  const cw = W-PAD*2, ch = H-PAD*2;
-  // Keep aspect ratio
-  const scale = Math.min(cw / lonR, ch / latR);
-  const offX = (cw - lonR*scale)/2, offY = (ch - latR*scale)/2;
-  const nx = p => PAD + offX + (p.lon - minLon)*scale;
-  const ny = p => PAD + offY + (maxLat - p.lat)*scale;  // flip lat
+  const PAD  = 22;
+  const cw   = W - PAD*2, ch = H - PAD*2;
+  const sc   = Math.min(cw / lonR, ch / latR);
+  const ox   = (cw - lonR*sc)/2, oy = (ch - latR*sc)/2;
+  const nx   = lon => PAD + ox + (lon - minLon)*sc;
+  const ny   = lat => PAD + oy + (maxLat - lat)*sc;
 
-  const pts = points.map(p => `${nx(p).toFixed(1)},${ny(p).toFixed(1)}`).join(' ');
-  const s0 = points[0], se = points[points.length-1];
-  svg.innerHTML = `
-    <rect width="${W}" height="${H}" fill="rgba(255,255,255,0.03)" rx="8"/>
-    <polyline points="${pts}" fill="none" stroke="${C.hr}" stroke-width="2"
-              stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
-    <circle cx="${nx(s0).toFixed(1)}" cy="${ny(s0).toFixed(1)}" r="4" fill="${C.rec}"/>
-    <circle cx="${nx(se).toFixed(1)}" cy="${ny(se).toFixed(1)}" r="4" fill="${C.hr}"/>
-  `;
+  // Background
+  ctx.fillStyle = '#0b0f1a';
+  ctx.beginPath(); ctx.roundRect(0, 0, W, H, 10); ctx.fill();
+
+  // Subtle grid lines
+  ctx.strokeStyle = 'rgba(255,255,255,0.03)'; ctx.lineWidth = 1;
+  [1,2,3].forEach(i => {
+    const gx = PAD + i*cw/4, gy = PAD + i*ch/4;
+    ctx.beginPath(); ctx.moveTo(gx, PAD); ctx.lineTo(gx, H-PAD); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(PAD, gy); ctx.lineTo(W-PAD, gy); ctx.stroke();
+  });
+
+  // Pace calculation per segment (min/km)
+  function haversineKm(la1, lo1, la2, lo2) {
+    const R = 6371, dLa = (la2-la1)*Math.PI/180, dLo = (lo2-lo1)*Math.PI/180;
+    const a = Math.sin(dLa/2)**2 + Math.cos(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.sin(dLo/2)**2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  }
+  const rawPaces = points.slice(1).map((p,i) => {
+    const dt = p.time && points[i].time ? (new Date(p.time)-new Date(points[i].time))/60000 : 0;
+    const km = haversineKm(+points[i].lat, +points[i].lon, +p.lat, +p.lon);
+    return (km > 0.0001 && dt > 0 && dt < 5) ? dt/km : null;
+  });
+  // Smooth with a 5-sample running average
+  const pSmooth = rawPaces.map((_,i) => {
+    const win = rawPaces.slice(Math.max(0,i-2), i+3).filter(v=>v!==null);
+    return win.length ? win.reduce((a,b)=>a+b,0)/win.length : null;
+  });
+  const valid  = pSmooth.filter(p => p !== null && p > 2 && p < 20);
+  const pFast  = valid.length ? valid.slice().sort((a,b)=>a-b)[Math.floor(valid.length*0.05)] : 4;
+  const pSlow  = valid.length ? valid.slice().sort((a,b)=>a-b)[Math.floor(valid.length*0.95)] : 8;
+
+  function paceColor(p) {
+    if (p === null) return 'rgba(94,142,247,0.7)';
+    const t = Math.max(0, Math.min(1, (p - pFast) / ((pSlow - pFast) || 1)));
+    // fast=green → mid=yellow → slow=red
+    if (t < 0.5) {
+      const u = t * 2;
+      return `rgb(${Math.round(48+207*u)},${Math.round(209+5*u)},${Math.round(88-88*u)})`;
+    }
+    const u = (t-0.5)*2;
+    return `rgb(255,${Math.round(214-214*u)},0)`;
+  }
+
+  // Draw pace-coloured route
+  ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+  points.slice(1).forEach((p, i) => {
+    ctx.strokeStyle = paceColor(pSmooth[i]);
+    ctx.beginPath();
+    ctx.moveTo(nx(+points[i].lon), ny(+points[i].lat));
+    ctx.lineTo(nx(+p.lon),         ny(+p.lat));
+    ctx.stroke();
+  });
+
+  // Start marker (green glow)
+  const p0 = points[0], pe = points[points.length-1];
+  ctx.shadowColor = '#30d158'; ctx.shadowBlur = 10;
+  ctx.fillStyle = '#30d158';
+  ctx.beginPath(); ctx.arc(nx(+p0.lon), ny(+p0.lat), 5, 0, Math.PI*2); ctx.fill();
+  ctx.shadowBlur = 0;
+  // End marker (red glow)
+  ctx.shadowColor = '#ff375f'; ctx.shadowBlur = 10;
+  ctx.fillStyle = '#ff375f';
+  ctx.beginPath(); ctx.arc(nx(+pe.lon), ny(+pe.lat), 5, 0, Math.PI*2); ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Pace legend (bottom-left)
+  const fmtPace = p => `${Math.floor(p)}:${String(Math.round((p%1)*60)).padStart(2,'0')}`;
+  const grad = ctx.createLinearGradient(PAD, 0, PAD+80, 0);
+  grad.addColorStop(0, '#30d158'); grad.addColorStop(0.5, '#ffd60a'); grad.addColorStop(1, '#ff375f');
+  ctx.fillStyle = grad;
+  ctx.beginPath(); ctx.roundRect(PAD, H-PAD-14, 80, 5, 2); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.font = '8px -apple-system,sans-serif';
+  ctx.textAlign = 'left';  ctx.textBaseline = 'bottom';
+  ctx.fillText(`${fmtPace(pFast)}/km`, PAD, H-PAD-17);
+  ctx.textAlign = 'right';
+  ctx.fillText(`${fmtPace(pSlow)}/km`, PAD+80, H-PAD-17);
+
+  if (elevCanvasId) drawElevationProfile(elevCanvasId, points);
+}
+
+// ── Elevation profile strip ───────────────────────────────────────────────────
+function drawElevationProfile(canvasId, points) {
+  const c = $(canvasId);
+  if (!c) return;
+  const alts = points.map(p => +p.alt).filter(a => !isNaN(a) && a > -500 && a < 9000);
+  if (alts.length < 2) { c.style.display='none'; return; }
+  const dpr = window.devicePixelRatio || 1;
+  const W   = c.offsetWidth || 340;
+  const H   = 52;
+  c.width   = W * dpr; c.height = H * dpr;
+  c.style.width = W+'px'; c.style.height = H+'px';
+  const ctx = c.getContext('2d'); ctx.scale(dpr, dpr);
+  const PAD = {l:2, r:2, t:5, b:18};
+  const cw  = W - PAD.l - PAD.r, ch = H - PAD.t - PAD.b;
+  const mn  = Math.min(...alts), mx = Math.max(...alts);
+  const rng = mx - mn || 1;
+  const xOf = i => PAD.l + (i/(alts.length-1))*cw;
+  const yOf = a => PAD.t + ch - ((a-mn)/rng)*ch;
+
+  // Fill
+  const grad = ctx.createLinearGradient(0, PAD.t, 0, H-PAD.b);
+  grad.addColorStop(0, 'rgba(255,149,0,0.35)'); grad.addColorStop(1, 'rgba(255,149,0,0.0)');
+  ctx.fillStyle = grad;
+  ctx.beginPath(); ctx.moveTo(xOf(0), H-PAD.b);
+  alts.forEach((a,i) => ctx.lineTo(xOf(i), yOf(a)));
+  ctx.lineTo(xOf(alts.length-1), H-PAD.b); ctx.closePath(); ctx.fill();
+
+  // Line
+  ctx.strokeStyle = '#ff9f0a'; ctx.lineWidth = 1.5; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  alts.forEach((a,i) => i ? ctx.lineTo(xOf(i),yOf(a)) : ctx.moveTo(xOf(i),yOf(a)));
+  ctx.stroke();
+
+  // Gain annotation
+  let gain = 0;
+  for (let i = 1; i < alts.length; i++) if (alts[i] > alts[i-1]) gain += alts[i]-alts[i-1];
+  ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.font = '9px -apple-system,sans-serif';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+  ctx.fillText(`↑ ${Math.round(gain)} m gain  ·  ${Math.round(mn)}–${Math.round(mx)} m alt`, PAD.l+4, H-2);
+  ctx.textAlign = 'right';
+  ctx.fillText('Elevation', W-PAD.r-4, H-2);
+
+  // Return gain for stat display
+  return Math.round(gain);
 }
 
 // ── HR Zone breakdown ────────────────────────────────────────────────────────
@@ -1650,7 +1777,16 @@ async function loadWoDetail(el, idx) {
     const route = await get(`/api/workout-route?start=${encodeURIComponent(start)}`);
     const rtWrap = $(`woRtWrap${idx}`);
     if (route && route.length >= 2) {
-      drawWoRoute(`woRtSvg${idx}`, route);
+      drawRouteMap(`woRtC${idx}`, route, `woElC${idx}`);
+      // Elevation gain stat
+      const alts = route.map(p => +p.alt).filter(a => !isNaN(a) && a > -500 && a < 9000);
+      if (alts.length >= 2) {
+        let gain = 0;
+        for (let i = 1; i < alts.length; i++) if (alts[i] > alts[i-1]) gain += alts[i]-alts[i-1];
+        const elevEl = $(`woElev${idx}`);
+        if (elevEl) elevEl.innerHTML =
+          `<div class="wo-stat-val">${Math.round(gain)} <span style="font-size:10px;font-weight:400">m</span></div><div class="wo-stat-lbl">Elevation Gain</div>`;
+      }
     } else if (rtWrap) {
       rtWrap.style.display = 'none';
     }
@@ -1706,18 +1842,22 @@ function renderWorkouts(data) {
         </div>
       </div>
       <div class="wo-detail">
-        ${stats ? `<div class="wo-detail-inner">${stats}</div>` : ''}
+        <div class="wo-detail-inner">
+          ${stats}
+          ${canRoute ? `<div class="wo-stat" id="woElev${idx}"></div>` : ''}
+        </div>
         <div class="wo-detail-charts">
           <div class="wo-hr-chart" id="woHrWrap${idx}">
             <div class="wo-hr-lbl">Heart Rate Trend</div>
             <canvas id="woHrC${idx}" height="120"></canvas>
           </div>
-          ${canRoute ? `<div class="wo-route-wrap" id="woRtWrap${idx}">
-            <div class="wo-route-lbl">Route</div>
-            <svg id="woRtSvg${idx}" viewBox="0 0 130 130"></svg>
-          </div>` : ''}
         </div>
         <div id="woZones${idx}"></div>
+        ${canRoute ? `<div class="wo-route-section" id="woRtWrap${idx}">
+          <div class="wo-route-lbl">GPS Route</div>
+          <canvas id="woRtC${idx}" class="wo-route-canvas"></canvas>
+          <canvas id="woElC${idx}" class="wo-elev-canvas"></canvas>
+        </div>` : ''}
       </div>
     </div>`;
   });
