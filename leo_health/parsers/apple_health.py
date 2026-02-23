@@ -49,6 +49,7 @@ class _HealthHandler(xml.sax.handler.ContentHandler):
     VITAL_TYPES = {
         "HKQuantityTypeIdentifierOxygenSaturation": "blood_oxygen_spo2",
         "HKQuantityTypeIdentifierRespiratoryRate":  "respiratory_rate",
+        "HKQuantityTypeIdentifierVO2Max":           "vo2_max",
     }
     SLEEP_VALUES = {
         "HKCategoryValueSleepAnalysisAsleep": "asleep",

@@ -274,6 +274,29 @@ def api_respiration(days=30):
     """, (_since(days),))
 
 
+def api_vo2max(days=365):
+    """VO2 Max readings from Apple Watch (mL/kg/min) with vVO2Max pace."""
+    rows = _q("""
+        SELECT date(recorded_at) AS date, ROUND(AVG(value),1) AS value
+        FROM heart_rate
+        WHERE metric='vo2_max' AND recorded_at>=?
+        GROUP BY date(recorded_at) ORDER BY date
+    """, (_since(days),))
+    # Compute vVO2Max pace: speed_m_per_min = (VO2Max - 3.5) / 0.2
+    # pace_min_per_km = 1000 / speed_m_per_min
+    for r in rows:
+        v = r.get("value")
+        if v and v > 5:
+            speed = (v - 3.5) / 0.2
+            pace_sec_km = (1000.0 / speed) * 60.0
+            mins = int(pace_sec_km // 60)
+            secs = int(pace_sec_km % 60)
+            r["pace_km"] = f"{mins}:{secs:02d}"
+        else:
+            r["pace_km"] = None
+    return rows
+
+
 def _dur_hours(end_col, start_col):
     """SQLite expression: hours between two ISO8601 columns (handles tz offsets)."""
     # SUBSTR(...,1,19) strips timezone offset so julianday() can parse it.
@@ -565,7 +588,7 @@ HTML = r"""<!DOCTYPE html>
   --hr:#ff375f;--hrv:#bf5af2;
   --sleep-deep:#5e5ce6;--sleep-rem:#bf5af2;--sleep-light:#32ade6;--sleep-awake:rgba(255,149,0,0.45);
   --rec:#30d158;--read:#ffd60a;--strain:#ff9f0a;--workout:#ff9f0a;
-  --spo2:#34c759;--resp:#64d2ff;
+  --spo2:#34c759;--resp:#64d2ff;--vo2:#ff9f0a;
   --r:16px;--r2:10px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
@@ -779,6 +802,21 @@ canvas{display:block;width:100%}
     <div class="chart-wrap"><canvas id="respC" height="128"></canvas><canvas class="overlay" id="respO" height="128"></canvas></div>
   </div>
 
+  <!-- VO2 Max -->
+  <div class="card" id="vo2Card">
+    <div class="card-hdr">
+      <div class="card-title"><div class="dot" style="background:var(--vo2)"></div>VO2 Max</div>
+      <div class="crange" data-chart="vo2max">
+        <button class="crbtn" data-d="30">30D</button>
+        <button class="crbtn" data-d="90">90D</button>
+        <button class="crbtn on" data-d="365">1Y</button>
+      </div>
+      <div class="card-stat"><div class="card-stat-val" id="vo2Val" style="color:var(--vo2)">—</div><div class="card-stat-lbl">mL/kg/min</div></div>
+    </div>
+    <div class="chart-wrap"><canvas id="vo2C" height="128"></canvas><canvas class="overlay" id="vo2O" height="128"></canvas></div>
+    <div id="vo2Pace" style="text-align:center;margin-top:8px;font-size:12px;color:var(--muted)"></div>
+  </div>
+
   <!-- Sleep -->
   <div class="card">
     <div class="card-hdr">
@@ -855,10 +893,11 @@ const C = {
   strain:'#ff9f0a',
   spo2:  '#34c759',
   resp:  '#64d2ff',
+  vo2:   '#ff9f0a',
 };
 
 // ── State & utils ─────────────────────────────────────────────────────────────
-const D = {hr:30, hrv:30, rhr:30, sleep:30, rec:30, wo:30, spo2:30, resp:30};
+const D = {hr:30, hrv:30, rhr:30, sleep:30, rec:30, wo:30, spo2:30, resp:30, vo2max:365};
 const cache = {};
 const $ = id => document.getElementById(id);
 const fmt = (n, d=0) => n == null ? '—' : (+n).toFixed(d);
@@ -1576,6 +1615,26 @@ async function loadRespiration() {
   attachHover(wrap,'respC','respO', d=>({val:fmt(d.value,1)+' br/min', sub:'Respiration Rate'}));
 }
 
+async function loadVO2Max() {
+  const d = await get(`/api/vo2max?days=${D.vo2max}`);
+  cache.vo2max = d;
+  const card = $('vo2Card');
+  if (!d||!d.length) { if(card) card.style.display='none'; return; }
+  if(card) card.style.display='';
+  const a = avg(d.map(r=>r.value).filter(v=>v));
+  const el = $('vo2Val'); if(el) countUp(el, a, 1);
+  drawLine('vo2C','vo2O', d, {color:C.vo2, unit:' mL/kg/min', minY:25, maxY:65});
+  const wrap = $('vo2C').parentElement;
+  attachHover(wrap,'vo2C','vo2O', r=>({
+    val: fmt(r.value,1)+' mL/kg/min',
+    sub: r.pace_km ? 'vVO2 pace: '+r.pace_km+' /km' : 'VO2 Max'
+  }));
+  // Show latest vVO2Max pace below chart
+  const last = d[d.length-1];
+  const paceEl = $('vo2Pace');
+  if(paceEl) paceEl.textContent = last&&last.pace_km ? 'vVO2 Max pace: '+last.pace_km+' /km' : '';
+}
+
 async function loadHR() {
   const d = await get(`/api/heart-rate?days=${D.hr}`);
   cache.hr = d;
@@ -1706,13 +1765,13 @@ async function loadWorkouts() {
 }
 
 function loadAll() {
-  loadBloodOxygen(); loadHRV(); loadRHR(); loadRespiration(); loadSleep(); loadRecovery(); loadWorkouts();
+  loadBloodOxygen(); loadHRV(); loadRHR(); loadRespiration(); loadVO2Max(); loadSleep(); loadRecovery(); loadWorkouts();
 }
 
 // ── Per-card range buttons ────────────────────────────────────────────────────
 const LOADERS = {
   spo2:loadBloodOxygen, hrv:loadHRV, rhr:loadRHR,
-  resp:loadRespiration, sleep:loadSleep, rec:loadRecovery, wo:loadWorkouts,
+  resp:loadRespiration, vo2max:loadVO2Max, sleep:loadSleep, rec:loadRecovery, wo:loadWorkouts,
 };
 document.querySelectorAll('.crange').forEach(group=>{
   group.querySelectorAll('.crbtn').forEach(btn=>{
@@ -1736,10 +1795,11 @@ document.querySelectorAll('.crange').forEach(group=>{
 window.addEventListener('resize', ()=>{
   clearTimeout(window._rsz);
   window._rsz = setTimeout(()=>{
-    if(cache.spo2)   drawLine('spo2C','spo2O',  cache.spo2, {color:C.spo2, unit:'%', minY:90, maxY:100});
-    if(cache.hrv)    drawLine('hrvC','hrvO',    cache.hrv,  {color:C.hrv,  unit:'ms', minY:0});
-    if(cache.rhr)    drawLine('rhrC','rhrO',    cache.rhr,  {color:C.rhr,  unit:'bpm'});
-    if(cache.resp)   drawLine('respC','respO',  cache.resp, {color:C.resp, unit:' br/min'});
+    if(cache.spo2)   drawLine('spo2C','spo2O',   cache.spo2,   {color:C.spo2, unit:'%', minY:90, maxY:100});
+    if(cache.hrv)    drawLine('hrvC','hrvO',     cache.hrv,    {color:C.hrv,  unit:'ms', minY:0});
+    if(cache.rhr)    drawLine('rhrC','rhrO',     cache.rhr,    {color:C.rhr,  unit:'bpm'});
+    if(cache.resp)   drawLine('respC','respO',   cache.resp,   {color:C.resp, unit:' br/min'});
+    if(cache.vo2max) drawLine('vo2C','vo2O',     cache.vo2max, {color:C.vo2,  unit:' mL/kg/min', minY:25, maxY:65});
     if(cache.sleep)  drawSleep('slC', cache.sleep);
     if(cache.rec){
       if(cache.rec.whoop?.length) drawLine('whoopC','whoopO',cache.rec.whoop,{color:C.rec,  unit:'%', minY:0, maxY:100});
@@ -1791,6 +1851,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             "/api/sleep":         lambda: api_sleep(d),
             "/api/blood-oxygen":  lambda: api_blood_oxygen(d),
             "/api/respiration":   lambda: api_respiration(d),
+            "/api/vo2max":        lambda: api_vo2max(d),
             "/api/recovery":      lambda: api_recovery(d),
             "/api/workouts":      lambda: api_workouts(d),
             "/api/debug/sleep":   lambda: api_debug_sleep(),
