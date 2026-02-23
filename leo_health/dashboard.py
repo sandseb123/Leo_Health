@@ -675,7 +675,7 @@ main{max-width:1360px;margin:0 auto;padding:28px 28px 60px}
 /* ── Summary cards ───────────────────────────────────────────────────── */
 .stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:20px}
 .stat{position:relative;background:var(--card);border:1px solid var(--border);
-  border-radius:var(--r);padding:13px 13px 11px;aspect-ratio:1;
+  border-radius:var(--r);padding:16px 18px 14px;min-height:96px;
   display:flex;flex-direction:column;justify-content:space-between;
   transition:border-color .2s,transform .2s;cursor:default;overflow:hidden}
 .stat::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;
