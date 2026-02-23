@@ -129,7 +129,7 @@ def _spo2_avg(since):
 
 
 def _trend_pct(now_v, base_v):
-    """% change from baseline (30d avg) to recent (7d avg). Positive = recent is higher."""
+    """% change from baseline (15d avg) to recent (7d avg). Positive = recent is higher."""
     try:
         if now_v is None or base_v is None or base_v == 0:
             return None
@@ -140,7 +140,7 @@ def _trend_pct(now_v, base_v):
 
 def api_summary():
     s7  = _since(7)
-    s30 = _since(30)
+    s15 = _since(15)
 
     # ── Current 7-day values ──────────────────────────────────────────────────
     rhr  = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
@@ -155,16 +155,16 @@ def api_summary():
     vo2_now   = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
                     "WHERE metric='vo2_max' AND recorded_at>=?", (s7,))
 
-    # ── 30-day baselines for trend comparison ─────────────────────────────────
+    # ── 15-day baselines for trend comparison ─────────────────────────────────
     rhr_base  = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
-                    "WHERE metric='resting_heart_rate' AND recorded_at>=?", (s30,))
-    hrv_base  = _q1("SELECT ROUND(AVG(value),1) AS v FROM hrv WHERE recorded_at>=?", (s30,))
+                    "WHERE metric='resting_heart_rate' AND recorded_at>=?", (s15,))
+    hrv_base  = _q1("SELECT ROUND(AVG(value),1) AS v FROM hrv WHERE recorded_at>=?", (s15,))
     resp_base = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
-                    "WHERE metric='respiratory_rate' AND recorded_at>=?", (s30,))
-    sleep_base = _sleep_avg(30)
-    spo2_base  = _spo2_avg(s30)
+                    "WHERE metric='respiratory_rate' AND recorded_at>=?", (s15,))
+    sleep_base = _sleep_avg(15)
+    spo2_base  = _spo2_avg(s15)
     vo2_base   = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
-                     "WHERE metric='vo2_max' AND recorded_at>=?", (s30,))
+                     "WHERE metric='vo2_max' AND recorded_at>=?", (s15,))
 
     # ── Recovery scores ───────────────────────────────────────────────────────
     whoop  = _q1("SELECT ROUND(AVG(recovery_score),0) AS v FROM whoop_recovery WHERE recorded_at>=?", (s7,))
@@ -673,7 +673,7 @@ header{position:sticky;top:0;z-index:100;
 main{max-width:1360px;margin:0 auto;padding:28px 28px 60px}
 
 /* ── Summary cards ───────────────────────────────────────────────────── */
-.stats-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,150px));gap:10px;margin-bottom:20px}
+.stats-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-bottom:20px}
 .stat{position:relative;background:var(--card);border:1px solid var(--border);
   border-radius:var(--r);padding:13px 13px 11px;aspect-ratio:1;
   display:flex;flex-direction:column;justify-content:space-between;
@@ -1971,7 +1971,7 @@ async function loadSummary() {
        </div>
        <div class="stat-ftr">
          ${trendBadge(s.trend, s.hb)}
-         <span class="stat-sub">vs 30d avg</span>
+         <span class="stat-sub">vs 15d avg</span>
        </div>
      </div>`
   ).join('');
