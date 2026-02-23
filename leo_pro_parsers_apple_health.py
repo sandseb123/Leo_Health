@@ -49,7 +49,7 @@ class _HealthHandler(xml.sax.handler.ContentHandler):
     VITAL_TYPES = {
         "HKQuantityTypeIdentifierOxygenSaturation": "blood_oxygen_spo2",
         "HKQuantityTypeIdentifierRespiratoryRate":  "respiratory_rate",
-        "HKQuantityTypeIdentifierVO2Max":           "vo2_max",
+        "HKQuantityTypeIdentifierVO2Max":           "vo2_max",          # mL/min·kg
     }
     SLEEP_VALUES = {
         "HKCategoryValueSleepAnalysisAsleep": "asleep",
@@ -60,14 +60,27 @@ class _HealthHandler(xml.sax.handler.ContentHandler):
         "HKCategoryValueSleepAnalysisCoreSleep": "core",
     }
     WORKOUT_TYPES = {
-        "HKWorkoutActivityTypeRunning": "running",
-        "HKWorkoutActivityTypeCycling": "cycling",
-        "HKWorkoutActivityTypeWalking": "walking",
-        "HKWorkoutActivityTypeSwimming": "swimming",
-        "HKWorkoutActivityTypeHIIT": "hiit",
-        "HKWorkoutActivityTypeStrengthTraining": "strength_training",
-        "HKWorkoutActivityTypeYoga": "yoga",
-        "HKWorkoutActivityTypeFunctionalStrengthTraining": "functional_strength",
+        "HKWorkoutActivityTypeRunning":                   "running",
+        "HKWorkoutActivityTypeIndoorRunning":             "indoor_running",
+        "HKWorkoutActivityTypeCycling":                   "cycling",
+        "HKWorkoutActivityTypeIndoorCycling":             "indoor_cycling",
+        "HKWorkoutActivityTypeWalking":                   "walking",
+        "HKWorkoutActivityTypeSwimming":                  "swimming",
+        "HKWorkoutActivityTypeHIIT":                      "hiit",
+        "HKWorkoutActivityTypeStrengthTraining":          "strength_training",
+        "HKWorkoutActivityTypeFunctionalStrengthTraining":"functional_strength",
+        "HKWorkoutActivityTypeYoga":                      "yoga",
+        "HKWorkoutActivityTypeHiking":                    "hiking",
+        "HKWorkoutActivityTypeElliptical":                "elliptical",
+        "HKWorkoutActivityTypeRowing":                    "rowing",
+        "HKWorkoutActivityTypeStairClimbing":             "stair_climbing",
+        "HKWorkoutActivityTypePilates":                   "pilates",
+        "HKWorkoutActivityTypeDance":                     "dance",
+        "HKWorkoutActivityTypePickleball":                "pickleball",
+        "HKWorkoutActivityTypeTennis":                    "tennis",
+        "HKWorkoutActivityTypeGolf":                      "golf",
+        "HKWorkoutActivityTypeSoccer":                    "soccer",
+        "HKWorkoutActivityTypeBasketball":                "basketball",
     }
 
     def __init__(self):

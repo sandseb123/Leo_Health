@@ -129,7 +129,7 @@ def _spo2_avg(since):
 
 
 def _trend_pct(now_v, base_v):
-    """% change from baseline (15d avg) to recent (7d avg). Positive = recent is higher."""
+    """% change from baseline (30d avg) to recent (7d avg). Positive = recent is higher."""
     try:
         if now_v is None or base_v is None or base_v == 0:
             return None
@@ -140,7 +140,7 @@ def _trend_pct(now_v, base_v):
 
 def api_summary():
     s7  = _since(7)
-    s15 = _since(15)
+    s30 = _since(30)
 
     # ── Current 7-day values ──────────────────────────────────────────────────
     rhr  = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
@@ -152,19 +152,15 @@ def api_summary():
     # Sleep via properly merged intervals (fixes double-counting)
     sleep_now = _sleep_avg(7)
     spo2_now  = _spo2_avg(s7)
-    vo2_now   = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
-                    "WHERE metric='vo2_max' AND recorded_at>=?", (s7,))
 
-    # ── 15-day baselines for trend comparison ─────────────────────────────────
+    # ── 30-day baselines for trend comparison ─────────────────────────────────
     rhr_base  = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
-                    "WHERE metric='resting_heart_rate' AND recorded_at>=?", (s15,))
-    hrv_base  = _q1("SELECT ROUND(AVG(value),1) AS v FROM hrv WHERE recorded_at>=?", (s15,))
+                    "WHERE metric='resting_heart_rate' AND recorded_at>=?", (s30,))
+    hrv_base  = _q1("SELECT ROUND(AVG(value),1) AS v FROM hrv WHERE recorded_at>=?", (s30,))
     resp_base = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
-                    "WHERE metric='respiratory_rate' AND recorded_at>=?", (s15,))
-    sleep_base = _sleep_avg(15)
-    spo2_base  = _spo2_avg(s15)
-    vo2_base   = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
-                     "WHERE metric='vo2_max' AND recorded_at>=?", (s15,))
+                    "WHERE metric='respiratory_rate' AND recorded_at>=?", (s30,))
+    sleep_base = _sleep_avg(30)
+    spo2_base  = _spo2_avg(s30)
 
     # ── Recovery scores ───────────────────────────────────────────────────────
     whoop  = _q1("SELECT ROUND(AVG(recovery_score),0) AS v FROM whoop_recovery WHERE recorded_at>=?", (s7,))
@@ -198,8 +194,6 @@ def api_summary():
         "whoop_recovery":   _safe_int(whoop.get("v")),
         "oura_readiness":   _safe_int(oura.get("v")),
         "whoop_strain":     rhr_or_none(strain.get("v")),
-        "vo2_max":          rhr_or_none(vo2_now.get("v")),
-        "vo2_max_trend":    _trend_pct(vo2_now.get("v"), vo2_base.get("v")),
         "sources":          sources,
         "last_recorded":    (last.get("d") or "")[:10],
     }
@@ -277,15 +271,6 @@ def api_respiration(days=30):
         SELECT date(recorded_at) AS date, ROUND(AVG(value),1) AS value
         FROM heart_rate
         WHERE metric='respiratory_rate' AND recorded_at>=?
-        GROUP BY date(recorded_at) ORDER BY date
-    """, (_since(days),))
-
-
-def api_vo2max(days=180):
-    return _q("""
-        SELECT date(recorded_at) AS date, ROUND(AVG(value),1) AS value
-        FROM heart_rate
-        WHERE metric='vo2_max' AND recorded_at>=?
         GROUP BY date(recorded_at) ORDER BY date
     """, (_since(days),))
 
@@ -504,33 +489,6 @@ def api_debug_sleep():
         return {"error": str(e)}
 
 
-def api_sleep_stages(date=""):
-    """Individual sleep stage segments for a specific night (for hypnogram hover).
-
-    Handles both pre-iOS-16 stage names (deep, rem, core) and post-iOS-16
-    names (asleepdeep, asleeprem, asleepcore, asleepunspecified).
-    Uses a ±12 h window around midnight so sessions starting before midnight
-    are still captured under the correct date.
-    """
-    if not date:
-        return []
-    return _q("""
-        SELECT stage, start, "end",
-               ROUND((julianday("end") - julianday(start)) * 24, 4) AS hours
-        FROM sleep
-        WHERE start >= datetime(?, '-12 hours')
-          AND start <  datetime(?, '+12 hours')
-          AND stage IN (
-              'awake',
-              'rem',   'deep',   'core',   'light',   'asleep',   'in_bed',
-              'asleeprem','asleepdeep','asleepcore','asleepunspecified'
-          )
-          AND start IS NOT NULL
-          AND "end" IS NOT NULL
-        ORDER BY start
-    """, (date, date))
-
-
 def api_workout_hr(start, end):
     """Heart rate samples recorded during a workout window.
     Uses datetime() for timezone-safe comparison (handles -05:00 vs Z offsets)."""
@@ -590,38 +548,18 @@ def api_temperature(days=30):
 
 def api_workouts(days=30):
     return _q("""
-        SELECT w.recorded_at,
-               w.end,
-               date(w.recorded_at)               AS date,
-               time(w.recorded_at)               AS time,
-               w.activity,
-               ROUND(w.duration_minutes, 1)      AS duration,
-               ROUND(w.calories, 0)              AS calories,
-               ROUND(w.distance_km, 2)           AS distance_km,
-               w.source,
-               (SELECT ROUND(AVG(h.value), 0)
-                FROM heart_rate h
-                WHERE h.metric = 'heart_rate'
-                  AND h.recorded_at >= w.recorded_at
-                  AND h.recorded_at <= COALESCE(w.end,
-                        datetime(w.recorded_at, '+2 hours'))
-               ) AS avg_hr,
-               (SELECT ROUND(MAX(h.value), 0)
-                FROM heart_rate h
-                WHERE h.metric = 'heart_rate'
-                  AND h.recorded_at >= w.recorded_at
-                  AND h.recorded_at <= COALESCE(w.end,
-                        datetime(w.recorded_at, '+2 hours'))
-               ) AS max_hr
-        FROM workouts w
-        WHERE w.recorded_at >= ?
-          AND w.rowid = (
-                SELECT MIN(w2.rowid) FROM workouts w2
-                WHERE w2.recorded_at = w.recorded_at
-                  AND w2.activity IS w.activity
-                  AND COALESCE(w2.source,'') = COALESCE(w.source,'')
-          )
-        ORDER BY w.recorded_at DESC
+        SELECT recorded_at,
+               end,
+               date(recorded_at)               AS date,
+               time(recorded_at)               AS time,
+               activity,
+               ROUND(duration_minutes, 1)      AS duration,
+               ROUND(calories, 0)              AS calories,
+               ROUND(distance_km, 2)           AS distance_km,
+               source
+        FROM workouts
+        WHERE recorded_at >= ?
+        ORDER BY recorded_at DESC
         LIMIT 60
     """, (_since(days),))
 
@@ -642,7 +580,7 @@ HTML = r"""<!DOCTYPE html>
   --hr:#ff375f;--hrv:#bf5af2;
   --sleep-deep:#5e5ce6;--sleep-rem:#bf5af2;--sleep-light:#32ade6;--sleep-awake:rgba(255,149,0,0.45);
   --rec:#30d158;--read:#ffd60a;--strain:#ff9f0a;--workout:#ff9f0a;
-  --spo2:#34c759;--resp:#64d2ff;--temp:#5ac8fa;--vo2:#0a84ff;
+  --spo2:#34c759;--resp:#64d2ff;--temp:#5ac8fa;
   --r:16px;--r2:10px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
@@ -673,21 +611,20 @@ header{position:sticky;top:0;z-index:100;
 main{max-width:1360px;margin:0 auto;padding:28px 28px 60px}
 
 /* ── Summary cards ───────────────────────────────────────────────────── */
-.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:20px}
+.stats-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;margin-bottom:20px}
 .stat{position:relative;background:var(--card);border:1px solid var(--border);
-  border-radius:var(--r);padding:16px 18px 14px;min-height:96px;
-  display:flex;flex-direction:column;justify-content:space-between;
+  border-radius:var(--r);padding:20px 20px 16px;
   transition:border-color .2s,transform .2s;cursor:default;overflow:hidden}
 .stat::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;
   background:var(--stat-col,#fff);opacity:.55}
 .stat:hover{border-color:var(--border2);transform:translateY(-2px)}
-.stat-hdr{display:flex;align-items:center;gap:5px;margin-bottom:6px}
-.stat-icon{font-size:12px;line-height:1}
-.stat-label{font-size:9px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted)}
-.stat-val{font-size:26px;font-weight:800;letter-spacing:-1.5px;line-height:1;margin-bottom:6px}
-.stat-unit{font-size:11px;font-weight:500;color:var(--dim);margin-left:2px;letter-spacing:0}
-.stat-ftr{display:flex;align-items:center;gap:5px}
-.stat-sub{font-size:9px;color:var(--muted)}
+.stat-hdr{display:flex;align-items:center;gap:6px;margin-bottom:12px}
+.stat-icon{font-size:14px;line-height:1}
+.stat-label{font-size:10px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted)}
+.stat-val{font-size:40px;font-weight:800;letter-spacing:-2px;line-height:1;margin-bottom:10px}
+.stat-unit{font-size:14px;font-weight:500;color:var(--dim);margin-left:3px;letter-spacing:0}
+.stat-ftr{display:flex;align-items:center;gap:7px}
+.stat-sub{font-size:10px;color:var(--muted)}
 
 /* ── Chart cards ─────────────────────────────────────────────────────── */
 .card{background:var(--card);border:1px solid var(--border);border-radius:var(--r);
@@ -753,9 +690,6 @@ canvas{display:block;width:100%}
 .wo-route-wrap{width:130px;flex-shrink:0}
 .wo-route-wrap svg{display:block;width:130px;height:130px;border-radius:8px}
 .wo-route-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px}
-.wo-route-section{padding:0 14px 14px}
-.wo-route-canvas{display:block;width:100%;height:200px;border-radius:10px}
-.wo-elev-canvas{display:block;width:100%;height:52px;margin-top:4px;border-radius:6px}
 /* HR Zones bar */
 .wo-zones{padding:4px 14px 14px 14px}
 .wo-zones-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:7px;display:flex;align-items:center;gap:8px}
@@ -889,20 +823,6 @@ canvas{display:block;width:100%}
     </div>
   </div>
 
-  <!-- VO2 Max -->
-  <div class="card" id="vo2Card" style="display:none">
-    <div class="card-hdr">
-      <div class="card-title"><div class="dot" style="background:var(--vo2)"></div>VO₂ Max</div>
-      <div class="crange" data-chart="vo2">
-        <button class="crbtn on" data-d="30">30D</button>
-        <button class="crbtn" data-d="90">90D</button>
-        <button class="crbtn" data-d="180">180D</button>
-      </div>
-      <div class="card-stat"><div class="card-stat-val" id="vo2Val" style="color:var(--vo2)">—</div><div class="card-stat-lbl">ml/kg/min</div></div>
-    </div>
-    <div class="chart-wrap"><canvas id="vo2C" height="128"></canvas><canvas class="overlay" id="vo2O" height="128"></canvas></div>
-  </div>
-
   <!-- Sleep -->
   <div class="card">
     <div class="card-hdr">
@@ -1010,11 +930,10 @@ const C = {
   spo2:  '#34c759',
   resp:  '#64d2ff',
   temp:  '#5ac8fa',
-  vo2:   '#0a84ff',
 };
 
 // ── State & utils ─────────────────────────────────────────────────────────────
-const D = {hr:7, hrv:7, rhr:7, sleep:7, rec:7, wo:7, spo2:7, resp:7, temp:7, vo2:30};
+const D = {hr:7, hrv:7, rhr:7, sleep:7, rec:7, wo:7, spo2:7, resp:7, temp:7};
 const cache = {};
 const $ = id => document.getElementById(id);
 const fmt = (n, d=0) => n == null ? '—' : (+n).toFixed(d);
@@ -1580,155 +1499,31 @@ function drawWoHR(canvasId, data) {
   c.style.cursor = 'crosshair';
 }
 
-// ── Workout GPS map — pace-coloured canvas ────────────────────────────────────
-function drawRouteMap(canvasId, points, elevCanvasId) {
-  const c = $(canvasId);
-  if (!c || !points || points.length < 2) return;
-  const dpr = window.devicePixelRatio || 1;
-  const W   = c.offsetWidth || 340;
-  const H   = 200;
-  c.width   = W * dpr; c.height = H * dpr;
-  c.style.width = W + 'px'; c.style.height = H + 'px';
-  const ctx = c.getContext('2d');
-  ctx.scale(dpr, dpr);
-
+// ── Workout GPS route SVG ─────────────────────────────────────────────────────
+function drawWoRoute(svgId, points) {
+  const svg = $(svgId);
+  if (!svg || !points || points.length < 2) return;
   const lats = points.map(p => +p.lat), lons = points.map(p => +p.lon);
   const minLat = Math.min(...lats), maxLat = Math.max(...lats);
   const minLon = Math.min(...lons), maxLon = Math.max(...lons);
   const latR = maxLat - minLat || 0.001, lonR = maxLon - minLon || 0.001;
-  const PAD  = 22;
-  const cw   = W - PAD*2, ch = H - PAD*2;
-  const sc   = Math.min(cw / lonR, ch / latR);
-  const ox   = (cw - lonR*sc)/2, oy = (ch - latR*sc)/2;
-  const nx   = lon => PAD + ox + (lon - minLon)*sc;
-  const ny   = lat => PAD + oy + (maxLat - lat)*sc;
+  const W = 130, H = 130, PAD = 10;
+  const cw = W-PAD*2, ch = H-PAD*2;
+  // Keep aspect ratio
+  const scale = Math.min(cw / lonR, ch / latR);
+  const offX = (cw - lonR*scale)/2, offY = (ch - latR*scale)/2;
+  const nx = p => PAD + offX + (p.lon - minLon)*scale;
+  const ny = p => PAD + offY + (maxLat - p.lat)*scale;  // flip lat
 
-  // Background
-  ctx.fillStyle = '#0b0f1a';
-  ctx.beginPath(); ctx.roundRect(0, 0, W, H, 10); ctx.fill();
-
-  // Subtle grid lines
-  ctx.strokeStyle = 'rgba(255,255,255,0.03)'; ctx.lineWidth = 1;
-  [1,2,3].forEach(i => {
-    const gx = PAD + i*cw/4, gy = PAD + i*ch/4;
-    ctx.beginPath(); ctx.moveTo(gx, PAD); ctx.lineTo(gx, H-PAD); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(PAD, gy); ctx.lineTo(W-PAD, gy); ctx.stroke();
-  });
-
-  // Pace calculation per segment (min/km)
-  function haversineKm(la1, lo1, la2, lo2) {
-    const R = 6371, dLa = (la2-la1)*Math.PI/180, dLo = (lo2-lo1)*Math.PI/180;
-    const a = Math.sin(dLa/2)**2 + Math.cos(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.sin(dLo/2)**2;
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  }
-  const rawPaces = points.slice(1).map((p,i) => {
-    const dt = p.time && points[i].time ? (new Date(p.time)-new Date(points[i].time))/60000 : 0;
-    const km = haversineKm(+points[i].lat, +points[i].lon, +p.lat, +p.lon);
-    return (km > 0.0001 && dt > 0 && dt < 5) ? dt/km : null;
-  });
-  // Smooth with a 5-sample running average
-  const pSmooth = rawPaces.map((_,i) => {
-    const win = rawPaces.slice(Math.max(0,i-2), i+3).filter(v=>v!==null);
-    return win.length ? win.reduce((a,b)=>a+b,0)/win.length : null;
-  });
-  const valid  = pSmooth.filter(p => p !== null && p > 2 && p < 20);
-  const pFast  = valid.length ? valid.slice().sort((a,b)=>a-b)[Math.floor(valid.length*0.05)] : 4;
-  const pSlow  = valid.length ? valid.slice().sort((a,b)=>a-b)[Math.floor(valid.length*0.95)] : 8;
-
-  function paceColor(p) {
-    if (p === null) return 'rgba(94,142,247,0.7)';
-    const t = Math.max(0, Math.min(1, (p - pFast) / ((pSlow - pFast) || 1)));
-    // fast=green → mid=yellow → slow=red
-    if (t < 0.5) {
-      const u = t * 2;
-      return `rgb(${Math.round(48+207*u)},${Math.round(209+5*u)},${Math.round(88-88*u)})`;
-    }
-    const u = (t-0.5)*2;
-    return `rgb(255,${Math.round(214-214*u)},0)`;
-  }
-
-  // Draw pace-coloured route
-  ctx.lineWidth = 2.5; ctx.lineCap = 'round';
-  points.slice(1).forEach((p, i) => {
-    ctx.strokeStyle = paceColor(pSmooth[i]);
-    ctx.beginPath();
-    ctx.moveTo(nx(+points[i].lon), ny(+points[i].lat));
-    ctx.lineTo(nx(+p.lon),         ny(+p.lat));
-    ctx.stroke();
-  });
-
-  // Start marker (green glow)
-  const p0 = points[0], pe = points[points.length-1];
-  ctx.shadowColor = '#30d158'; ctx.shadowBlur = 10;
-  ctx.fillStyle = '#30d158';
-  ctx.beginPath(); ctx.arc(nx(+p0.lon), ny(+p0.lat), 5, 0, Math.PI*2); ctx.fill();
-  ctx.shadowBlur = 0;
-  // End marker (red glow)
-  ctx.shadowColor = '#ff375f'; ctx.shadowBlur = 10;
-  ctx.fillStyle = '#ff375f';
-  ctx.beginPath(); ctx.arc(nx(+pe.lon), ny(+pe.lat), 5, 0, Math.PI*2); ctx.fill();
-  ctx.shadowBlur = 0;
-
-  // Pace legend (bottom-left)
-  const fmtPace = p => `${Math.floor(p)}:${String(Math.round((p%1)*60)).padStart(2,'0')}`;
-  const grad = ctx.createLinearGradient(PAD, 0, PAD+80, 0);
-  grad.addColorStop(0, '#30d158'); grad.addColorStop(0.5, '#ffd60a'); grad.addColorStop(1, '#ff375f');
-  ctx.fillStyle = grad;
-  ctx.beginPath(); ctx.roundRect(PAD, H-PAD-14, 80, 5, 2); ctx.fill();
-  ctx.fillStyle = 'rgba(255,255,255,0.4)';
-  ctx.font = '8px -apple-system,sans-serif';
-  ctx.textAlign = 'left';  ctx.textBaseline = 'bottom';
-  ctx.fillText(`${fmtPace(pFast)}/km`, PAD, H-PAD-17);
-  ctx.textAlign = 'right';
-  ctx.fillText(`${fmtPace(pSlow)}/km`, PAD+80, H-PAD-17);
-
-  if (elevCanvasId) drawElevationProfile(elevCanvasId, points);
-}
-
-// ── Elevation profile strip ───────────────────────────────────────────────────
-function drawElevationProfile(canvasId, points) {
-  const c = $(canvasId);
-  if (!c) return;
-  const alts = points.map(p => +p.alt).filter(a => !isNaN(a) && a > -500 && a < 9000);
-  if (alts.length < 2) { c.style.display='none'; return; }
-  const dpr = window.devicePixelRatio || 1;
-  const W   = c.offsetWidth || 340;
-  const H   = 52;
-  c.width   = W * dpr; c.height = H * dpr;
-  c.style.width = W+'px'; c.style.height = H+'px';
-  const ctx = c.getContext('2d'); ctx.scale(dpr, dpr);
-  const PAD = {l:2, r:2, t:5, b:18};
-  const cw  = W - PAD.l - PAD.r, ch = H - PAD.t - PAD.b;
-  const mn  = Math.min(...alts), mx = Math.max(...alts);
-  const rng = mx - mn || 1;
-  const xOf = i => PAD.l + (i/(alts.length-1))*cw;
-  const yOf = a => PAD.t + ch - ((a-mn)/rng)*ch;
-
-  // Fill
-  const grad = ctx.createLinearGradient(0, PAD.t, 0, H-PAD.b);
-  grad.addColorStop(0, 'rgba(255,149,0,0.35)'); grad.addColorStop(1, 'rgba(255,149,0,0.0)');
-  ctx.fillStyle = grad;
-  ctx.beginPath(); ctx.moveTo(xOf(0), H-PAD.b);
-  alts.forEach((a,i) => ctx.lineTo(xOf(i), yOf(a)));
-  ctx.lineTo(xOf(alts.length-1), H-PAD.b); ctx.closePath(); ctx.fill();
-
-  // Line
-  ctx.strokeStyle = '#ff9f0a'; ctx.lineWidth = 1.5; ctx.lineJoin = 'round';
-  ctx.beginPath();
-  alts.forEach((a,i) => i ? ctx.lineTo(xOf(i),yOf(a)) : ctx.moveTo(xOf(i),yOf(a)));
-  ctx.stroke();
-
-  // Gain annotation
-  let gain = 0;
-  for (let i = 1; i < alts.length; i++) if (alts[i] > alts[i-1]) gain += alts[i]-alts[i-1];
-  ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.font = '9px -apple-system,sans-serif';
-  ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
-  ctx.fillText(`↑ ${Math.round(gain)} m gain  ·  ${Math.round(mn)}–${Math.round(mx)} m alt`, PAD.l+4, H-2);
-  ctx.textAlign = 'right';
-  ctx.fillText('Elevation', W-PAD.r-4, H-2);
-
-  // Return gain for stat display
-  return Math.round(gain);
+  const pts = points.map(p => `${nx(p).toFixed(1)},${ny(p).toFixed(1)}`).join(' ');
+  const s0 = points[0], se = points[points.length-1];
+  svg.innerHTML = `
+    <rect width="${W}" height="${H}" fill="rgba(255,255,255,0.03)" rx="8"/>
+    <polyline points="${pts}" fill="none" stroke="${C.hr}" stroke-width="2"
+              stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+    <circle cx="${nx(s0).toFixed(1)}" cy="${ny(s0).toFixed(1)}" r="4" fill="${C.rec}"/>
+    <circle cx="${nx(se).toFixed(1)}" cy="${ny(se).toFixed(1)}" r="4" fill="${C.hr}"/>
+  `;
 }
 
 // ── HR Zone breakdown ────────────────────────────────────────────────────────
@@ -1808,16 +1603,7 @@ async function loadWoDetail(el, idx) {
     const route = await get(`/api/workout-route?start=${encodeURIComponent(start)}`);
     const rtWrap = $(`woRtWrap${idx}`);
     if (route && route.length >= 2) {
-      drawRouteMap(`woRtC${idx}`, route, `woElC${idx}`);
-      // Elevation gain stat
-      const alts = route.map(p => +p.alt).filter(a => !isNaN(a) && a > -500 && a < 9000);
-      if (alts.length >= 2) {
-        let gain = 0;
-        for (let i = 1; i < alts.length; i++) if (alts[i] > alts[i-1]) gain += alts[i]-alts[i-1];
-        const elevEl = $(`woElev${idx}`);
-        if (elevEl) elevEl.innerHTML =
-          `<div class="wo-stat-val">${Math.round(gain)} <span style="font-size:10px;font-weight:400">m</span></div><div class="wo-stat-lbl">Elevation Gain</div>`;
-      }
+      drawWoRoute(`woRtSvg${idx}`, route);
     } else if (rtWrap) {
       rtWrap.style.display = 'none';
     }
@@ -1873,22 +1659,18 @@ function renderWorkouts(data) {
         </div>
       </div>
       <div class="wo-detail">
-        <div class="wo-detail-inner">
-          ${stats}
-          ${canRoute ? `<div class="wo-stat" id="woElev${idx}"></div>` : ''}
-        </div>
+        ${stats ? `<div class="wo-detail-inner">${stats}</div>` : ''}
         <div class="wo-detail-charts">
           <div class="wo-hr-chart" id="woHrWrap${idx}">
             <div class="wo-hr-lbl">Heart Rate Trend</div>
             <canvas id="woHrC${idx}" height="120"></canvas>
           </div>
+          ${canRoute ? `<div class="wo-route-wrap" id="woRtWrap${idx}">
+            <div class="wo-route-lbl">Route</div>
+            <svg id="woRtSvg${idx}" viewBox="0 0 130 130"></svg>
+          </div>` : ''}
         </div>
         <div id="woZones${idx}"></div>
-        ${canRoute ? `<div class="wo-route-section" id="woRtWrap${idx}">
-          <div class="wo-route-lbl">GPS Route</div>
-          <canvas id="woRtC${idx}" class="wo-route-canvas"></canvas>
-          <canvas id="woElC${idx}" class="wo-elev-canvas"></canvas>
-        </div>` : ''}
       </div>
     </div>`;
   });
@@ -1957,7 +1739,6 @@ async function loadSummary() {
     {label:'Whoop Recovery',icon:'⚡',  val:d.whoop_recovery,trend:null,               hb:true,  unit:'%',     dec:0, col:'var(--rec)'},
     {label:'Oura Readiness',icon:'💍',  val:d.oura_readiness,trend:null,               hb:true,  unit:'',      dec:0, col:'var(--read)'},
     {label:'Whoop Strain',  icon:'🔥',  val:d.whoop_strain,  trend:null,               hb:false, unit:' / 21', dec:1, col:'var(--strain)'},
-    {label:'VO₂ Max',       icon:'🫀',  val:d.vo2_max,       trend:d.vo2_max_trend,    hb:true,  unit:' ml/kg', dec:1, col:'var(--vo2)'},
   ].filter(s=>s.val!=null);
 
   $('statsRow').innerHTML = stats.map(s=>
@@ -1971,7 +1752,7 @@ async function loadSummary() {
        </div>
        <div class="stat-ftr">
          ${trendBadge(s.trend, s.hb)}
-         <span class="stat-sub">vs 15d avg</span>
+         <span class="stat-sub">vs 30d avg</span>
        </div>
      </div>`
   ).join('');
@@ -2009,19 +1790,6 @@ async function loadRespiration() {
   drawLine('respC','respO', d, {color:C.resp, unit:' br/min'});
   const wrap = $('respC').parentElement;
   attachHover(wrap,'respC','respO', d=>({val:fmt(d.value,1)+' br/min', sub:'Respiration Rate'}));
-}
-
-async function loadVO2Max() {
-  const d = await get(`/api/vo2-max?days=${D.vo2}`);
-  cache.vo2 = d;
-  const card = $('vo2Card');
-  if (!d||!d.length) { if(card) card.style.display='none'; return; }
-  if(card) card.style.display='';
-  const a = avg(d.map(r=>r.value).filter(v=>v));
-  const el = $('vo2Val'); if(el) countUp(el, a, 1);
-  drawLine('vo2C','vo2O', d, {color:C.vo2, unit:' ml/kg/min'});
-  const wrap = $('vo2C').parentElement;
-  attachHover(wrap,'vo2C','vo2O', d=>({val:fmt(d.value,1)+' ml/kg/min', sub:'VO₂ Max'}));
 }
 
 function drawHRBand(mainId, overlayId, data) {
@@ -2146,35 +1914,14 @@ function attachSleepHover(data) {
   if (!canvas || !overlay) return;
   const nights = data.slice(-Math.min(30, data.length));
   const wrap = canvas.parentElement;
+  let lastIdx = -1;
 
-  // ── Stage config ─────────────────────────────────────────────────────────
-  // Covers both pre-iOS-16 names (deep/rem/core) and post-iOS-16 names
-  // (asleepdeep / asleeprem / asleepcore / asleepunspecified).
-  const STAGE_ROW = {
-    awake:0,
-    rem:1,  asleeprem:1,
-    core:2, light:2, asleep:2, in_bed:2, asleepcore:2, asleepunspecified:2,
-    deep:3, asleepdeep:3,
-  };
-  const STAGE_COLOR = {
-    awake:'#ff6b6b',
-    rem:'#32ade6',   asleeprem:'#32ade6',
-    core:'#5e8ef7',  light:'#5e8ef7', asleep:'#5e8ef7', in_bed:'#5e8ef7',
-    asleepcore:'#5e8ef7', asleepunspecified:'#5e8ef7',
-    deep:'#5e5ce6',  asleepdeep:'#5e5ce6',
-  };
-  const ROW_LABELS  = ['Awake','REM','Core','Deep'];
-  const ROW_COLORS  = ['#ff6b6b','#32ade6','#5e8ef7','#5e5ce6'];
-  // Totals footer colours (match aggregated keys in the nightly data)
-  const TOTAL_COLS  = [
-    { key:'deep',  color:'#5e5ce6', label:'Deep'  },
-    { key:'rem',   color:'#32ade6', label:'REM'   },
-    { key:'light', color:'#5e8ef7', label:'Core'  },
-    { key:'awake', color:'#ff6b6b', label:'Awake' },
+  const STAGES = [
+    { key:'deep',  color:'#5e5ce6',             label:'Deep'  },
+    { key:'rem',   color:'#bf5af2',             label:'REM'   },
+    { key:'light', color:'#32ade6',             label:'Light' },
+    { key:'awake', color:'rgba(255,149,0,0.85)', label:'Awake' },
   ];
-
-  const stagesCache = {};  // date → segments[] | null (pending)
-  let currentIdx = -1;
 
   function getIdx(e) {
     const rect = canvas.getBoundingClientRect();
@@ -2184,198 +1931,122 @@ function attachSleepHover(data) {
     return Math.floor((mx - 36) / (barW + 3));
   }
 
-  function rrect(ctx, x, y, rw, rh, r) {
-    r = Math.min(r, rw/2, rh/2);
-    ctx.beginPath();
-    ctx.moveTo(x+r, y);
-    ctx.lineTo(x+rw-r, y); ctx.quadraticCurveTo(x+rw, y, x+rw, y+r);
-    ctx.lineTo(x+rw, y+rh-r); ctx.quadraticCurveTo(x+rw, y+rh, x+rw-r, y+rh);
-    ctx.lineTo(x+r, y+rh); ctx.quadraticCurveTo(x, y+rh, x, y+rh-r);
-    ctx.lineTo(x, y+r); ctx.quadraticCurveTo(x, y, x+r, y);
-    ctx.closePath();
+  function rrect(cx, x, y, rw, rh, r) {
+    cx.beginPath();
+    cx.moveTo(x+r, y);
+    cx.lineTo(x+rw-r, y); cx.quadraticCurveTo(x+rw, y, x+rw, y+r);
+    cx.lineTo(x+rw, y+rh-r); cx.quadraticCurveTo(x+rw, y+rh, x+rw-r, y+rh);
+    cx.lineTo(x+r, y+rh); cx.quadraticCurveTo(x, y+rh, x, y+rh-r);
+    cx.lineTo(x, y+r); cx.quadraticCurveTo(x, y, x+r, y);
+    cx.closePath();
   }
 
   function hm(v) {
-    const h = Math.floor(v), m = Math.round((v - h) * 60);
-    return m > 0 ? `${h}h ${m}m` : `${h}h`;
+    const hrs = Math.floor(v), min = Math.round((v - hrs) * 60);
+    return min > 0 ? `${hrs}h ${min}m` : `${hrs}h`;
   }
 
-  function fmt12(iso) {
-    const d = new Date(iso);
-    let h = d.getHours(), m = d.getMinutes();
-    const ap = h >= 12 ? 'PM' : 'AM';
-    h = h % 12 || 12;
-    return `${h}${m ? ':'+String(m).padStart(2,'0') : ''}${ap}`;
-  }
-
-  function draw(idx, segs) {
+  function draw(idx) {
     const dpr = window.devicePixelRatio || 1;
-    const W   = overlay.offsetWidth  || canvas.offsetWidth  || 600;
-    const H   = overlay.offsetHeight || canvas.offsetHeight || 150;
-    overlay.width  = W * dpr; overlay.height = H * dpr;
-    overlay.style.width = W+'px'; overlay.style.height = H+'px';
-    const ctx = overlay.getContext('2d'); ctx.scale(dpr, dpr);
-    ctx.clearRect(0, 0, W, H);
+    const W = overlay.offsetWidth || canvas.offsetWidth || 600;
+    const H = overlay.offsetHeight || canvas.offsetHeight || 150;
+    overlay.width = W * dpr; overlay.height = H * dpr;
+    overlay.style.width = W + 'px'; overlay.style.height = H + 'px';
+    const cx = overlay.getContext('2d'); cx.scale(dpr, dpr);
+    cx.clearRect(0, 0, W, H);
     if (idx < 0 || idx >= nights.length) return;
 
-    // ── Highlight hovered bar on main chart ────────────────────────────────
-    const PAD  = {l:36, r:10, t:10, b:26};
-    const cw   = W - PAD.l - PAD.r, ch = H - PAD.t - PAD.b;
+    const PAD = {l:36, r:10, t:10, b:26};
+    const cw = W - PAD.l - PAD.r, ch = H - PAD.t - PAD.b;
     const barW = (cw - (nights.length-1)*3) / nights.length;
     const barX = PAD.l + idx*(barW+3);
-    ctx.fillStyle = 'rgba(255,255,255,0.07)';
-    rrect(ctx, barX-1, PAD.t, barW+2, ch, 3); ctx.fill();
+
+    // Hovered bar highlight
+    cx.fillStyle = 'rgba(255,255,255,0.08)';
+    rrect(cx, barX-1, PAD.t, barW+2, ch, 3);
+    cx.fill();
 
     const n = nights[idx];
     const sleepH = (n.deep||0) + (n.rem||0) + (n.light||0);
+    const totalH  = sleepH + (n.awake||0);
 
-    // ── Card geometry ──────────────────────────────────────────────────────
-    const CW = 350, CH = 210;
+    // ── Card ─────────────────────────────────────────────────────────────────
+    const CW = 200, CH = 90;
+    // Flip left/right based on which side has more room
     const barCx = barX + barW / 2;
     let cx0 = barCx > W / 2 ? barX - CW - 6 : barX + barW + 6;
     cx0 = Math.max(4, Math.min(cx0, W - CW - 4));
-    const cy0 = Math.max(4, Math.min(PAD.t + (ch - CH) / 2, H - CH - 4));
+    const cy0 = PAD.t + Math.max(0, (ch - CH) / 2);  // centred in chart area
 
-    // Card background + border
-    ctx.fillStyle = 'rgba(8,8,20,0.97)';
-    rrect(ctx, cx0, cy0, CW, CH, 12); ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.09)'; ctx.lineWidth = 1;
-    rrect(ctx, cx0, cy0, CW, CH, 12); ctx.stroke();
+    // Background
+    cx.fillStyle = 'rgba(10,10,22,0.95)';
+    rrect(cx, cx0, cy0, CW, CH, 9); cx.fill();
+    cx.strokeStyle = 'rgba(255,255,255,0.08)'; cx.lineWidth = 1;
+    rrect(cx, cx0, cy0, CW, CH, 9); cx.stroke();
 
-    // ── Header ─────────────────────────────────────────────────────────────
-    ctx.fillStyle = 'rgba(255,255,255,0.38)';
-    ctx.font = '10px -apple-system,sans-serif';
-    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-    ctx.fillText(fmtDateLong(n.date), cx0+13, cy0+11);
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 16px -apple-system,sans-serif';
-    ctx.fillText(hm(sleepH) + ' sleep', cx0+13, cy0+25);
+    // Date
+    cx.fillStyle = 'rgba(255,255,255,0.4)';
+    cx.font = '10px -apple-system,sans-serif';
+    cx.textAlign = 'left'; cx.textBaseline = 'top';
+    cx.fillText(fmtDateLong(n.date), cx0+11, cy0+9);
 
-    // ── Hypnogram area ─────────────────────────────────────────────────────
-    const HP = { l: cx0+54, r: cx0+CW-14, t: cy0+52, b: cy0+CH-36 };
-    const HW = HP.r - HP.l, HH = HP.b - HP.t;
-    const rowH = HH / 4;
+    // Total sleep
+    cx.fillStyle = '#fff';
+    cx.font = 'bold 16px -apple-system,sans-serif';
+    cx.fillText(hm(sleepH), cx0+11, cy0+22);
 
-    if (!segs || !segs.length) {
-      // Fallback: proportional stage strip (no raw segments available)
-      const totalH = sleepH + (n.awake||0) || 1;
-      let sx = HP.l;
-      ctx.save();
-      rrect(ctx, HP.l, HP.t + HH*0.3, HW, HH*0.4, 5); ctx.clip();
-      TOTAL_COLS.forEach(c => {
-        const sw = ((n[c.key]||0) / totalH) * HW;
-        if (sw < 0.5) return;
-        ctx.fillStyle = c.color + 'cc';
-        ctx.fillRect(sx, HP.t + HH*0.3, sw, HH*0.4); sx += sw;
-      });
-      ctx.restore();
-      ctx.fillStyle = 'rgba(255,255,255,0.2)';
-      ctx.font = '10px -apple-system,sans-serif';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText('No stage detail in database', HP.l + HW/2, HP.t + HH/2);
-    } else {
-      // ── Row labels + dashed guide lines ──────────────────────────────────
-      ROW_LABELS.forEach((lbl, r) => {
-        const ly = HP.t + r * rowH + rowH / 2;
-        ctx.setLineDash([2,5]); ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(HP.l, ly); ctx.lineTo(HP.r, ly); ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle = ROW_COLORS[r];
-        ctx.font = 'bold 8px -apple-system,sans-serif';
-        ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-        ctx.fillText(lbl, HP.l - 5, ly);
-      });
+    // ── Proportional stage bar ────────────────────────────────────────────────
+    const SBX = cx0+11, SBY = cy0+46, SBW = CW-22, SBH = 8;
+    cx.save();
+    rrect(cx, SBX, SBY, SBW, SBH, 4); cx.clip();
+    let sx = SBX;
+    STAGES.forEach(s => {
+      const val = n[s.key] || 0;
+      if (!val || !totalH) return;
+      const sw = (val / totalH) * SBW;
+      if (sw < 0.5) return;
+      cx.fillStyle = s.color;
+      cx.fillRect(sx, SBY, sw, SBH);
+      sx += sw;
+    });
+    cx.restore();
 
-      // ── Time mapping ──────────────────────────────────────────────────────
-      const t0    = new Date(segs[0].start).getTime();
-      const t1    = new Date(segs[segs.length-1].end).getTime();
-      const tSpan = (t1 - t0) || 1;
-      const tx    = t => HP.l + ((t - t0) / tSpan) * HW;
-      const midY  = r => HP.t + r * rowH + rowH / 2;
+    // ── Stage breakdown 2-column grid ─────────────────────────────────────────
+    const COL2 = cx0 + 11 + (CW - 22) / 2 + 4;
+    STAGES.forEach((s, i) => {
+      const col = i % 2, row = Math.floor(i / 2);
+      const gx = col === 0 ? cx0+11 : COL2;
+      const gy = cy0+60 + row*16;
+      const val = n[s.key] || 0;
 
-      // Bezier connectors between consecutive segments (drawn behind segments)
-      ctx.lineWidth = 1.5;
-      for (let i = 0; i < segs.length - 1; i++) {
-        const s = segs[i], sn = segs[i+1];
-        const r  = STAGE_ROW[s.stage]  ?? 2;
-        const rn = STAGE_ROW[sn.stage] ?? 2;
-        if (r === rn) continue;
-        const x1 = tx(new Date(s.end).getTime());
-        const x2 = tx(new Date(sn.start).getTime());
-        const mx  = (x1 + x2) / 2;
-        ctx.strokeStyle = (STAGE_COLOR[s.stage] || '#5e8ef7') + '55';
-        ctx.beginPath(); ctx.moveTo(x1, midY(r));
-        ctx.bezierCurveTo(mx, midY(r), mx, midY(rn), x2, midY(rn)); ctx.stroke();
-      }
+      // Coloured dot
+      cx.fillStyle = s.color;
+      cx.beginPath(); cx.arc(gx+4, gy+5, 3, 0, Math.PI*2); cx.fill();
 
-      // Segment blocks
-      segs.forEach(s => {
-        const r     = STAGE_ROW[s.stage] ?? 2;
-        const color = STAGE_COLOR[s.stage] || '#5e8ef7';
-        const x1    = tx(new Date(s.start).getTime());
-        const x2    = tx(new Date(s.end).getTime());
-        const segW  = Math.max(x2 - x1, 2);
-        const sy    = HP.t + r * rowH + rowH * 0.18;
-        const sh    = rowH * 0.64;
-        ctx.fillStyle = color + 'cc';
-        rrect(ctx, x1, sy, segW, sh, Math.min(3, segW/2)); ctx.fill();
-        // Bright top highlight
-        ctx.fillStyle = color;
-        ctx.fillRect(x1, sy, segW, Math.min(2, sh));
-      });
+      // Stage name
+      cx.fillStyle = 'rgba(255,255,255,0.38)';
+      cx.font = '10px -apple-system,sans-serif';
+      cx.textAlign = 'left'; cx.textBaseline = 'top';
+      cx.fillText(s.label, gx+12, gy);
 
-      // Time axis labels
-      ctx.fillStyle = 'rgba(255,255,255,0.25)';
-      ctx.font = '8px -apple-system,sans-serif';
-      ctx.textAlign = 'left';  ctx.textBaseline = 'top';
-      ctx.fillText(fmt12(segs[0].start),               HP.l,      HP.b+5);
-      ctx.textAlign = 'right';
-      ctx.fillText(fmt12(segs[segs.length-1].end),     HP.r,      HP.b+5);
-    }
-
-    // ── Stage totals footer ────────────────────────────────────────────────
-    const activeCols = TOTAL_COLS.filter(c => (n[c.key]||0) > 0);
-    const colW = (CW - 24) / Math.max(activeCols.length, 1);
-    activeCols.forEach((c, i) => {
-      const gx = cx0 + 12 + i * colW;
-      const gy = cy0 + CH - 28;
-      ctx.fillStyle = c.color;
-      ctx.beginPath(); ctx.arc(gx+5, gy+5, 3, 0, Math.PI*2); ctx.fill();
-      ctx.fillStyle = 'rgba(255,255,255,0.35)';
-      ctx.font = '9px -apple-system,sans-serif';
-      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-      ctx.fillText(c.label, gx+12, gy);
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 9px -apple-system,sans-serif';
-      ctx.fillText(hm(n[c.key]), gx+12, gy+11);
+      // Duration (right-aligned to its column)
+      cx.fillStyle = '#fff';
+      cx.font = 'bold 10px -apple-system,sans-serif';
+      cx.textAlign = 'right';
+      const rightEdge = col === 0 ? COL2 - 6 : cx0 + CW - 11;
+      cx.fillText(val > 0 ? hm(val) : '—', rightEdge, gy);
     });
   }
 
-  // ── Event handlers ─────────────────────────────────────────────────────────
+  // Suppress DOM tooltip while hovering over the sleep chart
   const domTT = $('tt');
-
-  function onMove(e) {
+  wrap.addEventListener('mousemove', e => {
     if (domTT) domTT.style.display = 'none';
     const idx = getIdx(e);
-    if (idx < 0 || idx >= nights.length) { draw(-1, null); currentIdx = -1; return; }
-    if (idx === currentIdx) return;
-    currentIdx = idx;
-    const n    = nights[idx];
-    const segs = stagesCache[n.date];
-    if (segs !== undefined) {
-      draw(idx, segs);  // already cached (or confirmed empty)
-    } else {
-      draw(idx, null);  // show card immediately with totals while fetching
-      stagesCache[n.date] = null;  // mark pending
-      get(`/api/sleep-stages?date=${n.date}`).then(s => {
-        stagesCache[n.date] = (s && s.length) ? s : [];
-        if (currentIdx === idx) draw(idx, stagesCache[n.date]);
-      });
-    }
-  }
-
-  wrap.addEventListener('mousemove', onMove);
-  wrap.addEventListener('mouseleave', () => { draw(-1, null); currentIdx = -1; });
+    if (idx < 0 || idx >= nights.length) { draw(-1); lastIdx = -1; return; }
+    if (idx !== lastIdx) { draw(idx); lastIdx = idx; }
+  });
+  wrap.addEventListener('mouseleave', () => { draw(-1); lastIdx = -1; });
 }
 
 async function loadSleep() {
@@ -2472,13 +2143,13 @@ async function loadTemperature() {
 }
 
 function loadAll() {
-  loadBloodOxygen(); loadHRV(); loadRHR(); loadHR(); loadRespiration(); loadVO2Max(); loadSleep(); loadRecovery(); loadWorkouts(); loadTemperature();
+  loadBloodOxygen(); loadHRV(); loadRHR(); loadHR(); loadRespiration(); loadSleep(); loadRecovery(); loadWorkouts(); loadTemperature();
 }
 
 // ── Per-card range buttons ────────────────────────────────────────────────────
 const LOADERS = {
   spo2:loadBloodOxygen, hrv:loadHRV, rhr:loadRHR, hr:loadHR,
-  resp:loadRespiration, vo2:loadVO2Max, sleep:loadSleep, rec:loadRecovery, wo:loadWorkouts, temp:loadTemperature,
+  resp:loadRespiration, sleep:loadSleep, rec:loadRecovery, wo:loadWorkouts, temp:loadTemperature,
 };
 document.querySelectorAll('.crange').forEach(group=>{
   group.querySelectorAll('.crbtn').forEach(btn=>{
@@ -2507,7 +2178,6 @@ window.addEventListener('resize', ()=>{
     if(cache.rhr)    drawLine('rhrC','rhrO',    cache.rhr,  {color:C.rhr,  unit:'bpm'});
     if(cache.hr?.length) drawHRBand('hrC','hrO', cache.hr);
     if(cache.resp)   drawLine('respC','respO',  cache.resp, {color:C.resp, unit:' br/min'});
-    if(cache.vo2)    drawLine('vo2C','vo2O',    cache.vo2,  {color:C.vo2,  unit:' ml/kg/min'});
     if(cache.sleep)  drawSleep('slC', cache.sleep);
     if(cache.rec){
       if(cache.rec.whoop?.length)        drawLine('whoopC','whoopO', cache.rec.whoop,        {color:C.rec,    unit:'%', minY:0, maxY:100});
@@ -2553,10 +2223,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         p = urllib.parse.urlparse(self.path)
         qs = urllib.parse.parse_qs(p.query)
-        d     = int(qs.get("days",  ["30"])[0])
+        d  = int(qs.get("days", ["30"])[0])
         start = qs.get("start", [""])[0]
         end   = qs.get("end",   [""])[0]
-        date  = qs.get("date",  [""])[0]
         routes = {
             "/api/summary":       lambda: api_summary(),
             "/api/heart-rate":    lambda: api_heart_rate(d),
@@ -2565,12 +2234,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             "/api/sleep":         lambda: api_sleep(d),
             "/api/blood-oxygen":  lambda: api_blood_oxygen(d),
             "/api/respiration":   lambda: api_respiration(d),
-            "/api/vo2-max":       lambda: api_vo2max(d),
             "/api/recovery":      lambda: api_recovery(d),
             "/api/temperature":   lambda: api_temperature(d),
             "/api/workouts":      lambda: api_workouts(d),
             "/api/debug/sleep":   lambda: api_debug_sleep(),
-            "/api/sleep-stages":  lambda: api_sleep_stages(date),
             "/api/workout-hr":    lambda: api_workout_hr(start, end),
             "/api/workout-route": lambda: api_workout_route(start),
         }

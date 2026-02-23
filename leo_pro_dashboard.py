@@ -129,7 +129,7 @@ def _spo2_avg(since):
 
 
 def _trend_pct(now_v, base_v):
-    """% change from baseline (15d avg) to recent (7d avg). Positive = recent is higher."""
+    """% change from baseline (30d avg) to recent (7d avg). Positive = recent is higher."""
     try:
         if now_v is None or base_v is None or base_v == 0:
             return None
@@ -140,7 +140,7 @@ def _trend_pct(now_v, base_v):
 
 def api_summary():
     s7  = _since(7)
-    s15 = _since(15)
+    s30 = _since(30)
 
     # ── Current 7-day values ──────────────────────────────────────────────────
     rhr  = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
@@ -152,19 +152,15 @@ def api_summary():
     # Sleep via properly merged intervals (fixes double-counting)
     sleep_now = _sleep_avg(7)
     spo2_now  = _spo2_avg(s7)
-    vo2_now   = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
-                    "WHERE metric='vo2_max' AND recorded_at>=?", (s7,))
 
-    # ── 15-day baselines for trend comparison ─────────────────────────────────
+    # ── 30-day baselines for trend comparison ─────────────────────────────────
     rhr_base  = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
-                    "WHERE metric='resting_heart_rate' AND recorded_at>=?", (s15,))
-    hrv_base  = _q1("SELECT ROUND(AVG(value),1) AS v FROM hrv WHERE recorded_at>=?", (s15,))
+                    "WHERE metric='resting_heart_rate' AND recorded_at>=?", (s30,))
+    hrv_base  = _q1("SELECT ROUND(AVG(value),1) AS v FROM hrv WHERE recorded_at>=?", (s30,))
     resp_base = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
-                    "WHERE metric='respiratory_rate' AND recorded_at>=?", (s15,))
-    sleep_base = _sleep_avg(15)
-    spo2_base  = _spo2_avg(s15)
-    vo2_base   = _q1("SELECT ROUND(AVG(value),1) AS v FROM heart_rate "
-                     "WHERE metric='vo2_max' AND recorded_at>=?", (s15,))
+                    "WHERE metric='respiratory_rate' AND recorded_at>=?", (s30,))
+    sleep_base = _sleep_avg(30)
+    spo2_base  = _spo2_avg(s30)
 
     # ── Recovery scores ───────────────────────────────────────────────────────
     whoop  = _q1("SELECT ROUND(AVG(recovery_score),0) AS v FROM whoop_recovery WHERE recorded_at>=?", (s7,))
@@ -198,8 +194,6 @@ def api_summary():
         "whoop_recovery":   _safe_int(whoop.get("v")),
         "oura_readiness":   _safe_int(oura.get("v")),
         "whoop_strain":     rhr_or_none(strain.get("v")),
-        "vo2_max":          rhr_or_none(vo2_now.get("v")),
-        "vo2_max_trend":    _trend_pct(vo2_now.get("v"), vo2_base.get("v")),
         "sources":          sources,
         "last_recorded":    (last.get("d") or "")[:10],
     }
@@ -277,15 +271,6 @@ def api_respiration(days=30):
         SELECT date(recorded_at) AS date, ROUND(AVG(value),1) AS value
         FROM heart_rate
         WHERE metric='respiratory_rate' AND recorded_at>=?
-        GROUP BY date(recorded_at) ORDER BY date
-    """, (_since(days),))
-
-
-def api_vo2max(days=180):
-    return _q("""
-        SELECT date(recorded_at) AS date, ROUND(AVG(value),1) AS value
-        FROM heart_rate
-        WHERE metric='vo2_max' AND recorded_at>=?
         GROUP BY date(recorded_at) ORDER BY date
     """, (_since(days),))
 
@@ -531,6 +516,20 @@ def api_sleep_stages(date=""):
     """, (date, date))
 
 
+def api_vo2max(days=365):
+    """VO2 Max readings from Apple Watch (mL/min·kg).
+    Measured only after outdoor runs so we use a 365-day default window."""
+    rows = _q("""
+        SELECT date(recorded_at) AS date, ROUND(AVG(value), 1) AS value
+        FROM heart_rate
+        WHERE metric = 'vo2_max'
+          AND recorded_at >= ?
+        GROUP BY date(recorded_at)
+        ORDER BY date
+    """, (_since(days),))
+    return rows
+
+
 def api_workout_hr(start, end):
     """Heart rate samples recorded during a workout window.
     Uses datetime() for timezone-safe comparison (handles -05:00 vs Z offsets)."""
@@ -545,11 +544,19 @@ def api_workout_hr(start, end):
 
 
 def api_workout_route(start):
-    """GPS route points for a workout (empty list if not yet imported)."""
+    """GPS route points for a workout.
+
+    Apple Health GPX filenames use LOCAL time (no timezone), while
+    workouts.recorded_at stores the timezone offset (e.g. -05:00).
+    Comparing datetime() values converts one to UTC and leaves the other
+    as local time, so they never match.  Matching on SUBSTR(…,1,16)
+    (YYYY-MM-DDTHH:MM) compares the local-time portion only, which is
+    identical in both representations.
+    """
     return _q("""
         SELECT latitude AS lat, longitude AS lon, altitude_m AS alt, timestamp AS time
         FROM workout_routes
-        WHERE datetime(workout_start) = datetime(?)
+        WHERE SUBSTR(workout_start, 1, 16) = SUBSTR(?, 1, 16)
         ORDER BY timestamp LIMIT 5000
     """, (start,))
 
@@ -612,7 +619,11 @@ def api_workouts(days=30):
                   AND h.recorded_at >= w.recorded_at
                   AND h.recorded_at <= COALESCE(w.end,
                         datetime(w.recorded_at, '+2 hours'))
-               ) AS max_hr
+               ) AS max_hr,
+               CASE WHEN EXISTS (
+                   SELECT 1 FROM workout_routes wr
+                   WHERE SUBSTR(wr.workout_start, 1, 16) = SUBSTR(w.recorded_at, 1, 16)
+               ) THEN 1 ELSE 0 END AS has_route
         FROM workouts w
         WHERE w.recorded_at >= ?
           AND w.rowid = (
@@ -639,10 +650,10 @@ HTML = r"""<!DOCTYPE html>
   --bg:#08080f;--card:#111119;--card2:#17172a;
   --border:rgba(255,255,255,0.07);--border2:rgba(255,255,255,0.12);
   --text:#f0f0f8;--dim:rgba(240,240,248,0.55);--muted:rgba(240,240,248,0.3);
-  --hr:#ff375f;--hrv:#bf5af2;
+  --hr:#ff375f;--hrv:#bf5af2;--vo2:#ff9f0a;
   --sleep-deep:#5e5ce6;--sleep-rem:#bf5af2;--sleep-light:#32ade6;--sleep-awake:rgba(255,149,0,0.45);
   --rec:#30d158;--read:#ffd60a;--strain:#ff9f0a;--workout:#ff9f0a;
-  --spo2:#34c759;--resp:#64d2ff;--temp:#5ac8fa;--vo2:#0a84ff;
+  --spo2:#34c759;--resp:#64d2ff;--temp:#5ac8fa;
   --r:16px;--r2:10px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
@@ -673,21 +684,20 @@ header{position:sticky;top:0;z-index:100;
 main{max-width:1360px;margin:0 auto;padding:28px 28px 60px}
 
 /* ── Summary cards ───────────────────────────────────────────────────── */
-.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:20px}
+.stats-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;margin-bottom:20px}
 .stat{position:relative;background:var(--card);border:1px solid var(--border);
-  border-radius:var(--r);padding:16px 18px 14px;min-height:96px;
-  display:flex;flex-direction:column;justify-content:space-between;
+  border-radius:var(--r);padding:20px 20px 16px;
   transition:border-color .2s,transform .2s;cursor:default;overflow:hidden}
 .stat::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;
   background:var(--stat-col,#fff);opacity:.55}
 .stat:hover{border-color:var(--border2);transform:translateY(-2px)}
-.stat-hdr{display:flex;align-items:center;gap:5px;margin-bottom:6px}
-.stat-icon{font-size:12px;line-height:1}
-.stat-label{font-size:9px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted)}
-.stat-val{font-size:26px;font-weight:800;letter-spacing:-1.5px;line-height:1;margin-bottom:6px}
-.stat-unit{font-size:11px;font-weight:500;color:var(--dim);margin-left:2px;letter-spacing:0}
-.stat-ftr{display:flex;align-items:center;gap:5px}
-.stat-sub{font-size:9px;color:var(--muted)}
+.stat-hdr{display:flex;align-items:center;gap:6px;margin-bottom:12px}
+.stat-icon{font-size:14px;line-height:1}
+.stat-label{font-size:10px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted)}
+.stat-val{font-size:40px;font-weight:800;letter-spacing:-2px;line-height:1;margin-bottom:10px}
+.stat-unit{font-size:14px;font-weight:500;color:var(--dim);margin-left:3px;letter-spacing:0}
+.stat-ftr{display:flex;align-items:center;gap:7px}
+.stat-sub{font-size:10px;color:var(--muted)}
 
 /* ── Chart cards ─────────────────────────────────────────────────────── */
 .card{background:var(--card);border:1px solid var(--border);border-radius:var(--r);
@@ -738,8 +748,20 @@ canvas{display:block;width:100%}
 .wo-chev{font-size:11px;color:var(--muted);transition:transform .2s;flex-shrink:0}
 .wo.open .wo-chev{transform:rotate(90deg)}
 /* Expandable detail panel */
-.wo-detail{max-height:0;overflow:hidden;transition:max-height .3s ease}
-.wo.open .wo-detail{max-height:700px}
+.wo-detail{max-height:0;overflow:hidden;transition:max-height .4s ease}
+.wo.open .wo-detail{max-height:1400px}
+.wo-type-badge{display:inline-block;font-size:9px;font-weight:700;letter-spacing:.6px;
+  padding:2px 7px;border-radius:10px;margin-left:6px;vertical-align:middle;text-transform:uppercase}
+.wo-badge-outdoor{background:rgba(48,209,88,0.15);color:#30d158}
+.wo-badge-indoor{background:rgba(255,255,255,0.07);color:rgba(255,255,255,0.35)}
+.wo-no-gps{padding:12px 0;font-size:11px;color:var(--muted);text-align:center;font-style:italic}
+.wo-splits{padding:10px 0 2px}
+.wo-splits-title{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px}
+.wo-split-row{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.wo-split-lbl{font-size:10px;color:var(--muted);width:28px;text-align:right;flex-shrink:0}
+.wo-split-bar-track{flex:1;height:6px;border-radius:3px;background:rgba(255,255,255,0.07);overflow:hidden}
+.wo-split-bar{height:100%;border-radius:3px;transition:width .4s ease}
+.wo-split-pace{font-size:10px;color:var(--text);width:38px;flex-shrink:0}
 .wo-detail-inner{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));
   gap:10px 16px;padding:0 14px 10px 46px}
 .wo-stat{display:flex;flex-direction:column;gap:2px}
@@ -847,6 +869,24 @@ canvas{display:block;width:100%}
     </div>
   </div>
 
+  <!-- VO2 Max -->
+  <div class="card" id="vo2Card" style="display:none">
+    <div class="card-hdr">
+      <div class="card-title"><div class="dot" style="background:var(--vo2)"></div>VO2 Max</div>
+      <div class="crange" data-chart="vo2max">
+        <button class="crbtn on" data-d="90">90D</button>
+        <button class="crbtn" data-d="180">180D</button>
+        <button class="crbtn" data-d="365">1Y</button>
+      </div>
+      <div class="card-stat">
+        <div class="card-stat-val" id="vo2Val" style="color:var(--vo2)">—</div>
+        <div class="card-stat-lbl">mL/min·kg</div>
+      </div>
+    </div>
+    <div class="chart-wrap"><canvas id="vo2C" height="140"></canvas><canvas class="overlay" id="vo2O" height="140"></canvas></div>
+    <div id="vo2Zone" style="padding:6px 16px 10px;font-size:11px;color:var(--muted)"></div>
+  </div>
+
   <!-- Heart Rate Daily Range -->
   <div class="card" id="hrCard" style="display:none">
     <div class="card-hdr">
@@ -887,20 +927,6 @@ canvas{display:block;width:100%}
       </div>
       <div class="chart-wrap"><canvas id="respC" height="140"></canvas><canvas class="overlay" id="respO" height="140"></canvas></div>
     </div>
-  </div>
-
-  <!-- VO2 Max -->
-  <div class="card" id="vo2Card" style="display:none">
-    <div class="card-hdr">
-      <div class="card-title"><div class="dot" style="background:var(--vo2)"></div>VO₂ Max</div>
-      <div class="crange" data-chart="vo2">
-        <button class="crbtn on" data-d="30">30D</button>
-        <button class="crbtn" data-d="90">90D</button>
-        <button class="crbtn" data-d="180">180D</button>
-      </div>
-      <div class="card-stat"><div class="card-stat-val" id="vo2Val" style="color:var(--vo2)">—</div><div class="card-stat-lbl">ml/kg/min</div></div>
-    </div>
-    <div class="chart-wrap"><canvas id="vo2C" height="128"></canvas><canvas class="overlay" id="vo2O" height="128"></canvas></div>
   </div>
 
   <!-- Sleep -->
@@ -1010,11 +1036,11 @@ const C = {
   spo2:  '#34c759',
   resp:  '#64d2ff',
   temp:  '#5ac8fa',
-  vo2:   '#0a84ff',
+  vo2:   '#ff9f0a',
 };
 
 // ── State & utils ─────────────────────────────────────────────────────────────
-const D = {hr:7, hrv:7, rhr:7, sleep:7, rec:7, wo:7, spo2:7, resp:7, temp:7, vo2:30};
+const D = {hr:7, hrv:7, rhr:7, sleep:7, rec:7, wo:7, spo2:7, resp:7, temp:7, vo2max:90};
 const cache = {};
 const $ = id => document.getElementById(id);
 const fmt = (n, d=0) => n == null ? '—' : (+n).toFixed(d);
@@ -1615,23 +1641,23 @@ function drawRouteMap(canvasId, points, elevCanvasId) {
     ctx.beginPath(); ctx.moveTo(PAD, gy); ctx.lineTo(W-PAD, gy); ctx.stroke();
   });
 
-  // Pace calculation per segment (min/km)
-  function haversineKm(la1, lo1, la2, lo2) {
-    const R = 6371, dLa = (la2-la1)*Math.PI/180, dLo = (lo2-lo1)*Math.PI/180;
+  // Pace calculation per segment (min/mi)
+  function haversineMi(la1, lo1, la2, lo2) {
+    const R = 3958.8, dLa = (la2-la1)*Math.PI/180, dLo = (lo2-lo1)*Math.PI/180;
     const a = Math.sin(dLa/2)**2 + Math.cos(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.sin(dLo/2)**2;
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
   }
   const rawPaces = points.slice(1).map((p,i) => {
     const dt = p.time && points[i].time ? (new Date(p.time)-new Date(points[i].time))/60000 : 0;
-    const km = haversineKm(+points[i].lat, +points[i].lon, +p.lat, +p.lon);
-    return (km > 0.0001 && dt > 0 && dt < 5) ? dt/km : null;
+    const mi = haversineMi(+points[i].lat, +points[i].lon, +p.lat, +p.lon);
+    return (mi > 0.00006 && dt > 0 && dt < 5) ? dt/mi : null;
   });
   // Smooth with a 5-sample running average
   const pSmooth = rawPaces.map((_,i) => {
     const win = rawPaces.slice(Math.max(0,i-2), i+3).filter(v=>v!==null);
     return win.length ? win.reduce((a,b)=>a+b,0)/win.length : null;
   });
-  const valid  = pSmooth.filter(p => p !== null && p > 2 && p < 20);
+  const valid  = pSmooth.filter(p => p !== null && p > 3 && p < 30);
   const pFast  = valid.length ? valid.slice().sort((a,b)=>a-b)[Math.floor(valid.length*0.05)] : 4;
   const pSlow  = valid.length ? valid.slice().sort((a,b)=>a-b)[Math.floor(valid.length*0.95)] : 8;
 
@@ -1678,9 +1704,9 @@ function drawRouteMap(canvasId, points, elevCanvasId) {
   ctx.fillStyle = 'rgba(255,255,255,0.4)';
   ctx.font = '8px -apple-system,sans-serif';
   ctx.textAlign = 'left';  ctx.textBaseline = 'bottom';
-  ctx.fillText(`${fmtPace(pFast)}/km`, PAD, H-PAD-17);
+  ctx.fillText(`${fmtPace(pFast)}/mi`, PAD, H-PAD-17);
   ctx.textAlign = 'right';
-  ctx.fillText(`${fmtPace(pSlow)}/km`, PAD+80, H-PAD-17);
+  ctx.fillText(`${fmtPace(pSlow)}/mi`, PAD+80, H-PAD-17);
 
   if (elevCanvasId) drawElevationProfile(elevCanvasId, points);
 }
@@ -1689,7 +1715,7 @@ function drawRouteMap(canvasId, points, elevCanvasId) {
 function drawElevationProfile(canvasId, points) {
   const c = $(canvasId);
   if (!c) return;
-  const alts = points.map(p => +p.alt).filter(a => !isNaN(a) && a > -500 && a < 9000);
+  const alts = points.map(p => +p.alt * 3.28084).filter(a => !isNaN(a) && a > -1640 && a < 29500);
   if (alts.length < 2) { c.style.display='none'; return; }
   const dpr = window.devicePixelRatio || 1;
   const W   = c.offsetWidth || 340;
@@ -1723,7 +1749,7 @@ function drawElevationProfile(canvasId, points) {
   for (let i = 1; i < alts.length; i++) if (alts[i] > alts[i-1]) gain += alts[i]-alts[i-1];
   ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.font = '9px -apple-system,sans-serif';
   ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
-  ctx.fillText(`↑ ${Math.round(gain)} m gain  ·  ${Math.round(mn)}–${Math.round(mx)} m alt`, PAD.l+4, H-2);
+  ctx.fillText(`↑ ${Math.round(gain)} ft gain  ·  ${Math.round(mn)}–${Math.round(mx)} ft alt`, PAD.l+4, H-2);
   ctx.textAlign = 'right';
   ctx.fillText('Elevation', W-PAD.r-4, H-2);
 
@@ -1803,23 +1829,81 @@ async function loadWoDetail(el, idx) {
     hrWrap.innerHTML = '<div style="font-size:11px;color:var(--muted);padding:8px 0">No HR samples in Apple Health for this workout</div>';
   }
 
-  const ROUTE_ACTS = new Set(['running','cycling','walking','hiking','skiing','snowboarding']);
+  const ROUTE_ACTS = new Set(['running','indoorrunning','cycling','walking','hiking','skiing','snowboarding']);
   if (ROUTE_ACTS.has(activity)) {
     const route = await get(`/api/workout-route?start=${encodeURIComponent(start)}`);
     const rtWrap = $(`woRtWrap${idx}`);
     if (route && route.length >= 2) {
-      drawRouteMap(`woRtC${idx}`, route, `woElC${idx}`);
-      // Elevation gain stat
-      const alts = route.map(p => +p.alt).filter(a => !isNaN(a) && a > -500 && a < 9000);
+      // Defer canvas draw one frame so layout is settled after detail opens
+      requestAnimationFrame(() => drawRouteMap(`woRtC${idx}`, route, `woElC${idx}`));
+
+      // ── Elevation gain ────────────────────────────────────────────────────
+      const alts = route.map(p => +p.alt * 3.28084).filter(a => !isNaN(a) && a > -1640 && a < 29500);
       if (alts.length >= 2) {
         let gain = 0;
         for (let i = 1; i < alts.length; i++) if (alts[i] > alts[i-1]) gain += alts[i]-alts[i-1];
         const elevEl = $(`woElev${idx}`);
         if (elevEl) elevEl.innerHTML =
-          `<div class="wo-stat-val">${Math.round(gain)} <span style="font-size:10px;font-weight:400">m</span></div><div class="wo-stat-lbl">Elevation Gain</div>`;
+          `<div class="wo-stat-val">${Math.round(gain)}<span style="font-size:10px;font-weight:400"> ft</span></div><div class="wo-stat-lbl">Elevation Gain</div>`;
       }
-    } else if (rtWrap) {
-      rtWrap.style.display = 'none';
+
+      // ── Per-mile splits + best split ──────────────────────────────────────
+      function haversineMi(la1,lo1,la2,lo2) {
+        const R=3958.8, dLa=(la2-la1)*Math.PI/180, dLo=(lo2-lo1)*Math.PI/180;
+        const a=Math.sin(dLa/2)**2+Math.cos(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.sin(dLo/2)**2;
+        return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+      }
+      const miSplits = [];   // pace in min/mi per each full mile
+      let cumDist = 0, miStart = 0, miStartDist = 0;
+      if (route[0].time) {
+        for (let i = 1; i < route.length; i++) {
+          cumDist += haversineMi(+route[i-1].lat,+route[i-1].lon,+route[i].lat,+route[i].lon);
+          while (cumDist - miStartDist >= 1.0) {
+            const dt = (new Date(route[i].time) - new Date(route[miStart].time)) / 60000;
+            const pac = dt / (cumDist - miStartDist);
+            if (pac > 2.5 && pac < 30) miSplits.push(pac);
+            miStartDist += 1.0; miStart = i;
+          }
+        }
+      }
+      // Best split stat
+      if (miSplits.length) {
+        const bestPace = Math.min(...miSplits);
+        const splitEl = $(`woSplit${idx}`);
+        if (splitEl) splitEl.innerHTML =
+          `<div class="wo-stat-val">${Math.floor(bestPace)}:${String(Math.round((bestPace%1)*60)).padStart(2,'0')}<span style="font-size:10px;font-weight:400"> /mi</span></div><div class="wo-stat-lbl">Best Split</div>`;
+      }
+      // Per-mile splits bar chart
+      if (miSplits.length >= 2) {
+        const slowest = Math.max(...miSplits), fastest = Math.min(...miSplits);
+        const range = slowest - fastest || 1;
+        const splitsEl = $(`woSplits${idx}`);
+        if (splitsEl) {
+          const paceStr = p => `${Math.floor(p)}:${String(Math.round((p%1)*60)).padStart(2,'0')}`;
+          const hue = p => {
+            const t = (p - fastest) / range;  // 0 = fast (green), 1 = slow (red)
+            const r = Math.round(t*255), g = Math.round((1-t)*255);
+            return `rgb(${r},${g},60)`;
+          };
+          splitsEl.innerHTML = `<div class="wo-splits-title">Mile Splits</div>` +
+            miSplits.map((p,i) => {
+              const w = Math.round((1-(p-fastest)/range)*100);
+              return `<div class="wo-split-row">
+                <div class="wo-split-lbl">mi ${i+1}</div>
+                <div class="wo-split-bar-track"><div class="wo-split-bar" style="width:${w}%;background:${hue(p)}"></div></div>
+                <div class="wo-split-pace">${paceStr(p)}</div>
+              </div>`;
+            }).join('');
+        }
+      }
+    } else {
+      // No GPS data returned — show message, hide canvas
+      const noGps = $(`woNoGps${idx}`);
+      const canvas = $(`woRtC${idx}`);
+      const elevC  = $(`woElC${idx}`);
+      if (noGps) noGps.style.display = '';
+      if (canvas) canvas.style.display = 'none';
+      if (elevC)  elevC.style.display  = 'none';
     }
   }
 }
@@ -1836,12 +1920,20 @@ function renderWorkouts(data) {
     const name = woName(w.activity);
     const dur  = w.duration  ? Math.round(w.duration) + 'm'          : '';
     const cals = w.calories  ? Math.round(w.calories) + ' kcal'      : '';
-    const dist = w.distance_km ? (+w.distance_km).toFixed(2) + ' km' : '';
+    const dist = w.distance_km ? (+w.distance_km * 0.621371).toFixed(2) + ' mi' : '';
     const pace = (w.duration && w.distance_km && w.distance_km > 0)
-                   ? Math.floor(w.duration / w.distance_km) + ':' +
-                     String(Math.round((w.duration / w.distance_km % 1) * 60)).padStart(2,'0') + ' /km'
+                   ? (() => { const p = w.duration / (w.distance_km * 0.621371);
+                              return Math.floor(p) + ':' + String(Math.round((p%1)*60)).padStart(2,'0') + ' /mi'; })()
                    : '';
-    const canRoute = ROUTE_ACTS.has(key);
+    const isRunAct   = key === 'running' || key === 'indoorrunning';
+    const isOutdoor  = !!w.has_route;                     // true = GPS exists
+    const isIndoor   = key === 'indoorrunning' || (isRunAct && !isOutdoor);
+    const canRoute   = ROUTE_ACTS.has(key);               // always render route section
+    const typeBadge  = isRunAct
+      ? (isIndoor
+          ? `<span class="wo-type-badge wo-badge-indoor">Treadmill</span>`
+          : `<span class="wo-type-badge wo-badge-outdoor">Outdoor</span>`)
+      : '';
 
     const stats = [
       dur   && `<div class="wo-stat"><div class="wo-stat-val">${dur}</div><div class="wo-stat-lbl">Duration</div></div>`,
@@ -1850,6 +1942,7 @@ function renderWorkouts(data) {
       pace  && `<div class="wo-stat"><div class="wo-stat-val">${pace}</div><div class="wo-stat-lbl">Pace</div></div>`,
       `<div class="wo-stat" id="woAvgHR${idx}"></div>`,
       `<div class="wo-stat" id="woMaxHR${idx}"></div>`,
+      isRunAct && `<div class="wo-stat" id="woSplit${idx}"></div>`,
       w.source && `<div class="wo-stat"><div class="wo-stat-val" style="font-size:11px;font-weight:400">${w.source.replace('_',' ')}</div><div class="wo-stat-lbl">Source</div></div>`,
     ].filter(Boolean).join('');
 
@@ -1862,7 +1955,7 @@ function renderWorkouts(data) {
         <div class="wo-left">
           <div class="wo-icon">${icon}</div>
           <div>
-            <div class="wo-name">${name}</div>
+            <div class="wo-name">${name}${typeBadge}</div>
             <div class="wo-date">${fmtDateLong(w.date)}${w.time?' · '+w.time.slice(0,5):''}</div>
           </div>
         </div>
@@ -1888,6 +1981,8 @@ function renderWorkouts(data) {
           <div class="wo-route-lbl">GPS Route</div>
           <canvas id="woRtC${idx}" class="wo-route-canvas"></canvas>
           <canvas id="woElC${idx}" class="wo-elev-canvas"></canvas>
+          <div id="woNoGps${idx}" class="wo-no-gps" style="display:none">No GPS data for this workout</div>
+          <div id="woSplits${idx}" class="wo-splits"></div>
         </div>` : ''}
       </div>
     </div>`;
@@ -1957,7 +2052,6 @@ async function loadSummary() {
     {label:'Whoop Recovery',icon:'⚡',  val:d.whoop_recovery,trend:null,               hb:true,  unit:'%',     dec:0, col:'var(--rec)'},
     {label:'Oura Readiness',icon:'💍',  val:d.oura_readiness,trend:null,               hb:true,  unit:'',      dec:0, col:'var(--read)'},
     {label:'Whoop Strain',  icon:'🔥',  val:d.whoop_strain,  trend:null,               hb:false, unit:' / 21', dec:1, col:'var(--strain)'},
-    {label:'VO₂ Max',       icon:'🫀',  val:d.vo2_max,       trend:d.vo2_max_trend,    hb:true,  unit:' ml/kg', dec:1, col:'var(--vo2)'},
   ].filter(s=>s.val!=null);
 
   $('statsRow').innerHTML = stats.map(s=>
@@ -1971,7 +2065,7 @@ async function loadSummary() {
        </div>
        <div class="stat-ftr">
          ${trendBadge(s.trend, s.hb)}
-         <span class="stat-sub">vs 15d avg</span>
+         <span class="stat-sub">vs 30d avg</span>
        </div>
      </div>`
   ).join('');
@@ -2009,19 +2103,6 @@ async function loadRespiration() {
   drawLine('respC','respO', d, {color:C.resp, unit:' br/min'});
   const wrap = $('respC').parentElement;
   attachHover(wrap,'respC','respO', d=>({val:fmt(d.value,1)+' br/min', sub:'Respiration Rate'}));
-}
-
-async function loadVO2Max() {
-  const d = await get(`/api/vo2-max?days=${D.vo2}`);
-  cache.vo2 = d;
-  const card = $('vo2Card');
-  if (!d||!d.length) { if(card) card.style.display='none'; return; }
-  if(card) card.style.display='';
-  const a = avg(d.map(r=>r.value).filter(v=>v));
-  const el = $('vo2Val'); if(el) countUp(el, a, 1);
-  drawLine('vo2C','vo2O', d, {color:C.vo2, unit:' ml/kg/min'});
-  const wrap = $('vo2C').parentElement;
-  attachHover(wrap,'vo2C','vo2O', d=>({val:fmt(d.value,1)+' ml/kg/min', sub:'VO₂ Max'}));
 }
 
 function drawHRBand(mainId, overlayId, data) {
@@ -2127,6 +2208,29 @@ async function loadHRV() {
   drawLine('hrvC','hrvO', d, {color:C.hrv, unit:'ms', minY:0});
   const wrap = $('hrvC').parentElement;
   attachHover(wrap,'hrvC','hrvO', d=>({val:fmt(d.value,1)+' ms', sub:d.source||''}));
+}
+
+async function loadVO2Max() {
+  const d = await get(`/api/vo2max?days=${D.vo2max}`);
+  cache.vo2max = d;
+  if (!d||!d.length) return;
+  $('vo2Card').style.display = '';
+  const latest = d[d.length-1]?.value;
+  const el = $('vo2Val'); if(el && latest) countUp(el, latest, 1);
+  drawLine('vo2C','vo2O', d, {color:C.vo2, unit:' mL/min·kg', minY:25, maxY:65});
+  const wrap = $('vo2C').parentElement;
+  attachHover(wrap,'vo2C','vo2O', r=>({val:fmt(r.value,1)+' mL/min·kg', sub:'VO2 Max'}));
+  // Fitness zone label
+  const zone = $('vo2Zone');
+  if (zone && latest) {
+    const [label, col] = latest >= 55 ? ['Excellent fitness', '#30d158']
+                       : latest >= 47 ? ['Good fitness',      '#34c759']
+                       : latest >= 40 ? ['Average fitness',   '#ff9f0a']
+                       : latest >= 35 ? ['Below average',     '#ff6b35']
+                       :                ['Poor fitness',      '#ff375f'];
+    zone.innerHTML = `Fitness level: <span style="color:${col};font-weight:600">${label}</span>
+      &nbsp;·&nbsp; Latest reading: <strong>${latest}</strong> mL/min·kg`;
+  }
 }
 
 async function loadRHR() {
@@ -2472,13 +2576,13 @@ async function loadTemperature() {
 }
 
 function loadAll() {
-  loadBloodOxygen(); loadHRV(); loadRHR(); loadHR(); loadRespiration(); loadVO2Max(); loadSleep(); loadRecovery(); loadWorkouts(); loadTemperature();
+  loadBloodOxygen(); loadHRV(); loadVO2Max(); loadRHR(); loadHR(); loadRespiration(); loadSleep(); loadRecovery(); loadWorkouts(); loadTemperature();
 }
 
 // ── Per-card range buttons ────────────────────────────────────────────────────
 const LOADERS = {
-  spo2:loadBloodOxygen, hrv:loadHRV, rhr:loadRHR, hr:loadHR,
-  resp:loadRespiration, vo2:loadVO2Max, sleep:loadSleep, rec:loadRecovery, wo:loadWorkouts, temp:loadTemperature,
+  spo2:loadBloodOxygen, hrv:loadHRV, vo2max:loadVO2Max, rhr:loadRHR, hr:loadHR,
+  resp:loadRespiration, sleep:loadSleep, rec:loadRecovery, wo:loadWorkouts, temp:loadTemperature,
 };
 document.querySelectorAll('.crange').forEach(group=>{
   group.querySelectorAll('.crbtn').forEach(btn=>{
@@ -2504,10 +2608,10 @@ window.addEventListener('resize', ()=>{
   window._rsz = setTimeout(()=>{
     if(cache.spo2)   drawLine('spo2C','spo2O',  cache.spo2, {color:C.spo2, unit:'%', minY:90, maxY:100});
     if(cache.hrv)    drawLine('hrvC','hrvO',    cache.hrv,  {color:C.hrv,  unit:'ms', minY:0});
+    if(cache.vo2max) drawLine('vo2C','vo2O',  cache.vo2max,{color:C.vo2,  unit:' mL/min·kg', minY:25, maxY:65});
     if(cache.rhr)    drawLine('rhrC','rhrO',    cache.rhr,  {color:C.rhr,  unit:'bpm'});
     if(cache.hr?.length) drawHRBand('hrC','hrO', cache.hr);
     if(cache.resp)   drawLine('respC','respO',  cache.resp, {color:C.resp, unit:' br/min'});
-    if(cache.vo2)    drawLine('vo2C','vo2O',    cache.vo2,  {color:C.vo2,  unit:' ml/kg/min'});
     if(cache.sleep)  drawSleep('slC', cache.sleep);
     if(cache.rec){
       if(cache.rec.whoop?.length)        drawLine('whoopC','whoopO', cache.rec.whoop,        {color:C.rec,    unit:'%', minY:0, maxY:100});
@@ -2562,10 +2666,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             "/api/heart-rate":    lambda: api_heart_rate(d),
             "/api/resting-hr":    lambda: api_resting_hr(d),
             "/api/hrv":           lambda: api_hrv(d),
+            "/api/vo2max":        lambda: api_vo2max(d),
             "/api/sleep":         lambda: api_sleep(d),
             "/api/blood-oxygen":  lambda: api_blood_oxygen(d),
             "/api/respiration":   lambda: api_respiration(d),
-            "/api/vo2-max":       lambda: api_vo2max(d),
             "/api/recovery":      lambda: api_recovery(d),
             "/api/temperature":   lambda: api_temperature(d),
             "/api/workouts":      lambda: api_workouts(d),
