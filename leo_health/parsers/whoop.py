@@ -43,6 +43,14 @@ def _float(val: str) -> Optional[float]:
         return None
 
 
+def _text(val: Optional[str]) -> Optional[str]:
+    """Normalize text fields: return None if empty/blank, else stripped string."""
+    if val is None:
+        return None
+    s = str(val).strip()
+    return s if s else None
+
+
 def _normalize_header(header: str) -> str:
     """Lowercase, strip, replace spaces/special chars for consistent matching."""
     return header.lower().strip().replace(" ", "_").replace("(", "").replace(")", "").replace("%", "pct").replace("/", "_per_")
@@ -99,6 +107,8 @@ def _parse_recovery_row(row: dict) -> Optional[dict]:
         "hrv_ms": hrv,
         "resting_heart_rate": rhr,
         "spo2_pct": spo2,
+        "respiratory_rate": _float(norm.get("respiratory_rate_rpm", "") or norm.get("respiratory_rate", "")),
+        "blood_oxygen_trend": _text(norm.get("blood_oxygen_trend") or norm.get("spo2_trend")),
         "skin_temp_celsius": _float(norm.get("skin_temp_celsius", "") or norm.get("skin_temp", "")),
     }
 
@@ -141,6 +151,9 @@ def _parse_sleep_row(row: dict) -> Optional[dict]:
         "recorded_at": _iso(date),
         "sleep_performance_pct": (_float(norm.get("sleep_performance_pct", "")) or
                                    _float(norm.get("sleep_performance", ""))),
+        "sleep_consistency_score": (_float(norm.get("sleep_consistency_score", "")) or
+                                     _float(norm.get("sleep_consistency_pct", "")) or
+                                     _float(norm.get("sleep_consistency", ""))),
         "time_in_bed_hours": _float(norm.get("time_in_bed_hours", "") or norm.get("total_in_bed_min_min", "")),
         "light_sleep_hours": _float(norm.get("light_sleep_duration_hours", "") or norm.get("light_sleep_min", "")),
         "rem_sleep_hours": _float(norm.get("rem_sleep_duration_hours", "") or norm.get("rem_sleep_min", "")),

@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS sleep (
     device          TEXT,
     -- Whoop-specific aggregates (NULL for Apple Health rows)
     sleep_performance_pct   REAL,
+    sleep_consistency_score REAL,
     time_in_bed_hours       REAL,
     light_sleep_hours       REAL,
     rem_sleep_hours         REAL,
@@ -84,6 +85,8 @@ CREATE TABLE IF NOT EXISTS whoop_recovery (
     hrv_ms          REAL,
     resting_heart_rate REAL,
     spo2_pct        REAL,
+    respiratory_rate REAL,
+    blood_oxygen_trend TEXT,
     skin_temp_celsius REAL,
     created_at      TEXT DEFAULT (datetime('now'))
 );
@@ -209,7 +212,31 @@ def create_schema(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     conn.executescript(SCHEMA)
     _migrate_sleep_dedup(conn)
     conn.commit()
+    
+    # Backfill new columns for existing databases
+    _add_column_if_not_exists(conn, "whoop_recovery", "respiratory_rate", "REAL")
+    _add_column_if_not_exists(conn, "whoop_recovery", "blood_oxygen_trend", "TEXT")
+    _add_column_if_not_exists(conn, "sleep", "sleep_consistency_score", "REAL")
+    
+    conn.commit()
     return conn
+
+
+def _add_column_if_not_exists(conn: sqlite3.Connection, table: str, column: str, datatype: str):
+    """
+    Safely add a column to a table if it doesn't already exist.
+    SQLite doesn't support 'ADD COLUMN IF NOT EXISTS', so we check first.
+    """
+    try:
+        # Check if column exists by querying table info
+        cursor = conn.execute(f"PRAGMA table_info({table})")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {datatype}")
+    except sqlite3.OperationalError:
+        # Table might not exist yet, that's okay
+        pass
 
 
 def get_stats(db_path: str = DEFAULT_DB_PATH) -> dict:

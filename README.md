@@ -167,9 +167,9 @@ FROM workouts GROUP BY activity ORDER BY sessions DESC;
 ### Whoop (CSV exports)
 | Data | Table | Metrics |
 |------|-------|---------|
-| Recovery | `whoop_recovery` | Score, HRV, resting HR, SpO2 |
+| Recovery | `whoop_recovery` | Score, HRV, resting HR, SpO2, respiratory rate |
 | Strain | `whoop_strain` | Day strain, calories, max/avg HR |
-| Sleep | `sleep` | Performance %, time in bed, stages |
+| Sleep | `sleep` | Performance %, time in bed, stages, consistency score |
 
 ### Oura Ring (CSV exports)
 | Data | Table | Metrics |
@@ -243,7 +243,6 @@ pyproject.toml
 Good first issues:
 - Add Fitbit CSV parser
 - Add Garmin `.fit` file support
-- Add missing Whoop metrics to schema
 - Improve test coverage
 
 See [`good first issue`](../../issues?q=is%3Aissue+label%3A%22good+first+issue%22) labels to get started.
