@@ -83,7 +83,7 @@ Leo detects it within 10 seconds, parses it automatically, and sends you a macOS
 
 **For Whoop:** Open Whoop app → Profile → Export Data → check email for CSVs → AirDrop them to your Mac. Leo auto-detects and ingests them too.
 
-**For Oura:** Go to [oura.com](https://oura.com) → Account → Data Export → Download, or open the Oura app → Profile → Export. You'll get CSV files for sleep, readiness, and activity — AirDrop them to your Mac and Leo handles the rest.
+**For Oura:** Go to [oura.com](https://ouraring.com) → Account → Data Export → Download, or open the Oura app → Profile → Export. You'll get CSV files for sleep, readiness, and activity — AirDrop them to your Mac and Leo handles the rest.
 
 ---
 
