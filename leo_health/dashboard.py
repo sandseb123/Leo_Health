@@ -673,7 +673,7 @@ header{position:sticky;top:0;z-index:100;
 main{max-width:1360px;margin:0 auto;padding:28px 28px 60px}
 
 /* ── Summary cards ───────────────────────────────────────────────────── */
-.stats-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-bottom:20px}
+.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:20px}
 .stat{position:relative;background:var(--card);border:1px solid var(--border);
   border-radius:var(--r);padding:13px 13px 11px;aspect-ratio:1;
   display:flex;flex-direction:column;justify-content:space-between;
