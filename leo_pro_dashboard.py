@@ -530,11 +530,19 @@ def api_workout_hr(start, end):
 
 
 def api_workout_route(start):
-    """GPS route points for a workout (empty list if not yet imported)."""
+    """GPS route points for a workout.
+
+    Apple Health GPX filenames use LOCAL time (no timezone), while
+    workouts.recorded_at stores the timezone offset (e.g. -05:00).
+    Comparing datetime() values converts one to UTC and leaves the other
+    as local time, so they never match.  Matching on SUBSTR(…,1,16)
+    (YYYY-MM-DDTHH:MM) compares the local-time portion only, which is
+    identical in both representations.
+    """
     return _q("""
         SELECT latitude AS lat, longitude AS lon, altitude_m AS alt, timestamp AS time
         FROM workout_routes
-        WHERE datetime(workout_start) = datetime(?)
+        WHERE SUBSTR(workout_start, 1, 16) = SUBSTR(?, 1, 16)
         ORDER BY timestamp LIMIT 5000
     """, (start,))
 
@@ -597,7 +605,11 @@ def api_workouts(days=30):
                   AND h.recorded_at >= w.recorded_at
                   AND h.recorded_at <= COALESCE(w.end,
                         datetime(w.recorded_at, '+2 hours'))
-               ) AS max_hr
+               ) AS max_hr,
+               CASE WHEN EXISTS (
+                   SELECT 1 FROM workout_routes wr
+                   WHERE SUBSTR(wr.workout_start, 1, 16) = SUBSTR(w.recorded_at, 1, 16)
+               ) THEN 1 ELSE 0 END AS has_route
         FROM workouts w
         WHERE w.recorded_at >= ?
           AND w.rowid = (
@@ -722,8 +734,12 @@ canvas{display:block;width:100%}
 .wo-chev{font-size:11px;color:var(--muted);transition:transform .2s;flex-shrink:0}
 .wo.open .wo-chev{transform:rotate(90deg)}
 /* Expandable detail panel */
-.wo-detail{max-height:0;overflow:hidden;transition:max-height .3s ease}
-.wo.open .wo-detail{max-height:700px}
+.wo-detail{max-height:0;overflow:hidden;transition:max-height .4s ease}
+.wo.open .wo-detail{max-height:1400px}
+.wo-type-badge{display:inline-block;font-size:9px;font-weight:700;letter-spacing:.6px;
+  padding:2px 7px;border-radius:10px;margin-left:6px;vertical-align:middle;text-transform:uppercase}
+.wo-badge-outdoor{background:rgba(48,209,88,0.15);color:#30d158}
+.wo-badge-indoor{background:rgba(255,255,255,0.07);color:rgba(255,255,255,0.35)}
 .wo-detail-inner{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));
   gap:10px 16px;padding:0 14px 10px 46px}
 .wo-stat{display:flex;flex-direction:column;gap:2px}
@@ -1772,20 +1788,49 @@ async function loadWoDetail(el, idx) {
     hrWrap.innerHTML = '<div style="font-size:11px;color:var(--muted);padding:8px 0">No HR samples in Apple Health for this workout</div>';
   }
 
-  const ROUTE_ACTS = new Set(['running','cycling','walking','hiking','skiing','snowboarding']);
+  const ROUTE_ACTS = new Set(['running','indoorrunning','cycling','walking','hiking','skiing','snowboarding']);
   if (ROUTE_ACTS.has(activity)) {
     const route = await get(`/api/workout-route?start=${encodeURIComponent(start)}`);
     const rtWrap = $(`woRtWrap${idx}`);
     if (route && route.length >= 2) {
-      drawRouteMap(`woRtC${idx}`, route, `woElC${idx}`);
-      // Elevation gain stat
+      // Defer canvas draw one frame so layout is settled after detail opens
+      requestAnimationFrame(() => drawRouteMap(`woRtC${idx}`, route, `woElC${idx}`));
+
+      // ── Elevation gain ────────────────────────────────────────────────────
       const alts = route.map(p => +p.alt).filter(a => !isNaN(a) && a > -500 && a < 9000);
       if (alts.length >= 2) {
         let gain = 0;
         for (let i = 1; i < alts.length; i++) if (alts[i] > alts[i-1]) gain += alts[i]-alts[i-1];
         const elevEl = $(`woElev${idx}`);
         if (elevEl) elevEl.innerHTML =
-          `<div class="wo-stat-val">${Math.round(gain)} <span style="font-size:10px;font-weight:400">m</span></div><div class="wo-stat-lbl">Elevation Gain</div>`;
+          `<div class="wo-stat-val">${Math.round(gain)}<span style="font-size:10px;font-weight:400"> m</span></div><div class="wo-stat-lbl">Elevation Gain</div>`;
+      }
+
+      // ── Best 1 km split ───────────────────────────────────────────────────
+      function haversineKm(la1,lo1,la2,lo2) {
+        const R=6371, dLa=(la2-la1)*Math.PI/180, dLo=(lo2-lo1)*Math.PI/180;
+        const a=Math.sin(dLa/2)**2+Math.cos(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.sin(dLo/2)**2;
+        return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+      }
+      if (route[0].time) {
+        let bestPace = Infinity, cumDist = 0, windowStart = 0, windowDistStart = 0;
+        for (let i = 1; i < route.length; i++) {
+          cumDist += haversineKm(+route[i-1].lat,+route[i-1].lon,+route[i].lat,+route[i].lon);
+          while (cumDist - windowDistStart >= 1.0) {
+            const km  = cumDist - windowDistStart;
+            const dt  = (new Date(route[i].time) - new Date(route[windowStart].time)) / 60000;
+            const pac = dt / km;
+            if (pac > 1.5 && pac < 20 && pac < bestPace) bestPace = pac;
+            windowDistStart += haversineKm(+route[windowStart].lat,+route[windowStart].lon,
+                                           +route[windowStart+1].lat,+route[windowStart+1].lon);
+            windowStart++;
+          }
+        }
+        if (bestPace < Infinity) {
+          const splitEl = $(`woSplit${idx}`);
+          if (splitEl) splitEl.innerHTML =
+            `<div class="wo-stat-val">${Math.floor(bestPace)}:${String(Math.round((bestPace%1)*60)).padStart(2,'0')}<span style="font-size:10px;font-weight:400"> /km</span></div><div class="wo-stat-lbl">Best Split</div>`;
+        }
       }
     } else if (rtWrap) {
       rtWrap.style.display = 'none';
@@ -1810,7 +1855,14 @@ function renderWorkouts(data) {
                    ? Math.floor(w.duration / w.distance_km) + ':' +
                      String(Math.round((w.duration / w.distance_km % 1) * 60)).padStart(2,'0') + ' /km'
                    : '';
-    const canRoute = ROUTE_ACTS.has(key);
+    const isRunAct   = key === 'running' || key === 'indoorrunning';
+    const isIndoor   = key === 'indoorrunning' || (isRunAct && !w.has_route);
+    const canRoute   = ROUTE_ACTS.has(key) && !!w.has_route;
+    const typeBadge  = isRunAct
+      ? (isIndoor
+          ? `<span class="wo-type-badge wo-badge-indoor">Treadmill</span>`
+          : `<span class="wo-type-badge wo-badge-outdoor">Outdoor</span>`)
+      : '';
 
     const stats = [
       dur   && `<div class="wo-stat"><div class="wo-stat-val">${dur}</div><div class="wo-stat-lbl">Duration</div></div>`,
@@ -1819,6 +1871,7 @@ function renderWorkouts(data) {
       pace  && `<div class="wo-stat"><div class="wo-stat-val">${pace}</div><div class="wo-stat-lbl">Pace</div></div>`,
       `<div class="wo-stat" id="woAvgHR${idx}"></div>`,
       `<div class="wo-stat" id="woMaxHR${idx}"></div>`,
+      isRunAct && `<div class="wo-stat" id="woSplit${idx}"></div>`,
       w.source && `<div class="wo-stat"><div class="wo-stat-val" style="font-size:11px;font-weight:400">${w.source.replace('_',' ')}</div><div class="wo-stat-lbl">Source</div></div>`,
     ].filter(Boolean).join('');
 
@@ -1831,7 +1884,7 @@ function renderWorkouts(data) {
         <div class="wo-left">
           <div class="wo-icon">${icon}</div>
           <div>
-            <div class="wo-name">${name}</div>
+            <div class="wo-name">${name}${typeBadge}</div>
             <div class="wo-date">${fmtDateLong(w.date)}${w.time?' · '+w.time.slice(0,5):''}</div>
           </div>
         </div>
