@@ -673,8 +673,8 @@ header{position:sticky;top:0;z-index:100;
 main{max-width:1360px;margin:0 auto;padding:28px 28px 60px}
 
 /* ── Summary cards ───────────────────────────────────────────────────── */
-.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:20px}
-.stat{position:relative;background:var(--card);border:1px solid var(--border);
+.stats-row{display:flex;gap:10px;margin-bottom:20px}
+.stat{flex:1;min-width:0;position:relative;background:var(--card);border:1px solid var(--border);
   border-radius:var(--r);padding:16px 18px 14px;min-height:96px;
   display:flex;flex-direction:column;justify-content:space-between;
   transition:border-color .2s,transform .2s;cursor:default;overflow:hidden}
@@ -796,7 +796,8 @@ canvas{display:block;width:100%}
 @media(max-width:720px){
   main{padding:16px 14px 50px}
   .two{grid-template-columns:1fr}
-  .stats-row{grid-template-columns:repeat(2,1fr)}
+  .stats-row{flex-wrap:wrap}
+  .stats-row .stat{flex:0 0 calc(50% - 5px)}
   .stat-val{font-size:34px}
   header{padding:0 16px}
 }
