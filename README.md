@@ -58,8 +58,6 @@ leo-watch    # start watching Downloads for new exports
 
 **Whoop:** Open Whoop app → Profile → Export Data → check email for CSVs → AirDrop to Mac
 
-**Oura:** Go to [ouraring.com](https://ouraring.com) → Account → Data Export → Download → AirDrop to Mac
-
 ```bash
 leo-watch    # start the watcher — detects exports within 10 seconds
 ```
@@ -74,10 +72,7 @@ Leo watches your Downloads folder and automatically parses any health export the
 - Never processes the same file twice
 - Sends a macOS notification when ingestion completes
 
-**Run Leo automatically on every login:**
-```
-**Run Leo automatically on every login:**
-Coming soon — LaunchAgent support is in progress.
+**Auto-start on login:** Coming soon.
 ```
 
 ---
@@ -155,8 +150,21 @@ Your data lives in `~/.leo-health/leo.db` and never leaves your machine.
 ## Project structure
 
 ```
+## Project structure
+```
+leo_health/
+├── parsers/
+│   ├── apple_health.py   # SAX streaming parser for export.zip
+│   └── whoop.py          # Auto-detecting CSV parser
+├── db/
+│   ├── schema.py         # SQLite schema
+│   └── ingest.py         # Unified ingest for all sources
+└── dashboard.py          # Local web dashboard (localhost only)
 status.py                 # leo command — terminal dashboard
 watcher.py                # leo-watch — auto-ingest on AirDrop
+install.sh                # One-command installer for macOS
+pyproject.toml
+```
 ```
 
 ---
