@@ -63,23 +63,6 @@ leo-watch    # start watching Downloads for new exports
 ```bash
 leo-watch    # start the watcher — detects exports within 10 seconds
 ```
-
----
-
-## Linux Support
-
-Leo Core runs on Linux too. AirDrop isn't available, but there are easy alternatives:
-
-**Transfer via LocalSend (recommended — wireless, no account needed):**
-1. Install [LocalSend](https://localsend.org) on both your iPhone and Linux machine
-2. Export from Health app → Share → LocalSend → select your Linux machine
-3. File lands in `~/Downloads/` automatically — `leo-watch` picks it up
-
-**Transfer via email or Google Drive:**
-1. Export from Health app → Share → Mail or Google Drive
-2. Download to `~/Downloads/` on your Linux machine
-3. `leo-watch` picks it up automatically
-
 ---
 
 ## Auto-Ingest via AirDrop ✨
@@ -92,9 +75,9 @@ Leo watches your Downloads folder and automatically parses any health export the
 - Sends a macOS notification when ingestion completes
 
 **Run Leo automatically on every login:**
-```bash
-cp com.leohealth.watcher.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.leohealth.watcher.plist
+```
+**Run Leo automatically on every login:**
+Coming soon — LaunchAgent support is in progress.
 ```
 
 ---
@@ -144,12 +127,7 @@ FROM workouts GROUP BY activity ORDER BY sessions DESC;
 | Strain | `whoop_strain` | Day strain, calories, max/avg HR |
 | Sleep | `sleep` | Performance %, time in bed, stages |
 
-### Oura Ring (CSV exports)
-| Data | Table | Metrics |
-|------|-------|---------|
-| Readiness | `oura_readiness` | Score, HRV balance, resting HR, temp deviation |
-| Sleep | `sleep` | REM, Deep, Light, Awake hours, efficiency % |
-| HRV | `hrv` | RMSSD in milliseconds |
+```
 
 ---
 
@@ -177,20 +155,8 @@ Your data lives in `~/.leo-health/leo.db` and never leaves your machine.
 ## Project structure
 
 ```
-leo_health/
-├── parsers/
-│   ├── apple_health.py   # SAX streaming parser for export.zip
-│   ├── whoop.py          # Auto-detecting CSV parser
-│   └── oura.py           # Oura Ring CSV parser
-├── db/
-│   ├── schema.py         # SQLite schema — 6 tables
-│   └── ingest.py         # Unified ingest for all sources
-├── status.py             # leo command — terminal dashboard
-└── watcher.py            # leo-watch — auto-ingest on AirDrop
-tests/
-└── test_parsers.py
-install.sh                # One-command installer for macOS + Linux
-pyproject.toml
+status.py                 # leo command — terminal dashboard
+watcher.py                # leo-watch — auto-ingest on AirDrop
 ```
 
 ---
@@ -199,12 +165,12 @@ pyproject.toml
 
 - [x] Apple Health XML parser
 - [x] Whoop CSV parser
-- [x] Oura Ring CSV support
 - [x] Normalized SQLite schema
 - [x] `leo` terminal dashboard
 - [x] `leo-watch` auto-ingest watcher
 - [x] AirDrop → auto-parse workflow
-- [x] Linux support
+- [ ] Linux support
+- [ ] Oura Ring CSV support
 - [ ] Fitbit CSV support
 - [ ] Garmin `.fit` support
 - [ ] Leo Max — AI Health Coach *(local LLM, fully private)*
