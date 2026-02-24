@@ -41,8 +41,9 @@ bash install.sh
 Two commands are now available anywhere on your Mac:
 
 ```bash
-leo          # view your health dashboard
-leo-watch    # start watching Downloads for new exports
+leo          # terminal dashboard
+leo-watch    # start watching Downloads for new exports  
+leo-dash     # open full web dashboard in browser
 ```
 
 ---
