@@ -107,11 +107,11 @@ Leo Core runs on Linux too. AirDrop isn't available, but there are easy alternat
 
 **Oura on Linux:** go to [oura.com](https://oura.com) → Account → Data Export → download directly in your browser
 
-## ⭐ Leo Health Max — Coming Soon
+---
 
-A local AI health coach that learns from PubMed weekly and knows your actual biometric history. 100% local. Zero cloud.
-
-**[→ Join the early access waitlist](https://sandseb123.github.io/Leo-Health-Core)**
+## 🧠 Leo Max — AI Health Coach (Coming Soon)
+Local LLM that analyses your data privately. Blood work history, wearable trends, medical literature — all on your Mac.
+[Join the waitlist →](https://sandseb123.github.io/Leo-Health-Core)
 
 ---
 
