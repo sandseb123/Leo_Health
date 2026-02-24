@@ -72,6 +72,8 @@ Leo watches your Downloads folder and automatically parses any health export the
 - Never processes the same file twice
 - Sends a macOS notification when ingestion completes
 
+---
+
 **Auto-start on login:** Coming soon.
 ---
 
@@ -120,7 +122,6 @@ FROM workouts GROUP BY activity ORDER BY sessions DESC;
 | Strain | `whoop_strain` | Day strain, calories, max/avg HR |
 | Sleep | `sleep` | Performance %, time in bed, stages |
 
-```
 
 ---
 
@@ -162,7 +163,6 @@ status.py                 # leo command — terminal dashboard
 watcher.py                # leo-watch — auto-ingest on AirDrop
 install.sh                # One-command installer for macOS
 pyproject.toml
-```
 ```
 
 ---
