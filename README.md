@@ -1,8 +1,8 @@
 # Leo Health 🫀
 
-> Your Apple Health, Whoop, and Oura data — unified in a local SQLite database. In 60 seconds.
+> Your Apple Health and Whoop data — unified in a local SQLite database. In 60 seconds.
 
-Apple Health locks your biometrics in a 4GB XML file. Whoop buries yours in CSVs. Oura scatters data across endpoints. Leo Core parses all three in under 60 seconds and writes everything to a single, normalized SQLite database — Heart Rate, Sleep, Workouts, HRV, Recovery Score, Blood Oxygen — all queryable with standard SQL.
+Apple Health locks your biometrics in a 4GB XML file. Whoop buries yours in CSVs with inconsistent column names. Leo Core parses both in under 60 seconds and writes everything to a single, normalized SQLite database — Heart Rate, Sleep, Workouts, HRV, Recovery Score, Blood Oxygen — all queryable with standard SQL.
 
 **Zero network requests. Runs locally. MIT licensed.**
 
@@ -22,13 +22,11 @@ Founding members get lifetime preferred pricing.
 
 ---
 
-
 ## What it looks like
 
 ![Leo Health Dashboard](assets/dashboard-overview.png)
 
 ![Leo Health Sleep Breakdown](assets/dashboard-sleep.png)
-
 
 ---
 
@@ -61,6 +59,7 @@ leo-watch    # start watching Downloads for new exports
 ```bash
 leo-watch    # start the watcher — detects exports within 10 seconds
 ```
+
 ---
 
 ## Auto-Ingest via AirDrop ✨
@@ -72,9 +71,8 @@ Leo watches your Downloads folder and automatically parses any health export the
 - Never processes the same file twice
 - Sends a macOS notification when ingestion completes
 
----
-
 **Auto-start on login:** Coming soon.
+
 ---
 
 ## Query your data
@@ -122,12 +120,12 @@ FROM workouts GROUP BY activity ORDER BY sessions DESC;
 | Strain | `whoop_strain` | Day strain, calories, max/avg HR |
 | Sleep | `sleep` | Performance %, time in bed, stages |
 
-
 ---
 
 ## Privacy
 
 Leo Core contains zero outbound network code. Verify the entire repository yourself:
+
 ```bash
 grep -r "import urllib\|import http\|import requests\|import socket\|http.client\|urllib.request" .
 ```
@@ -148,8 +146,6 @@ Your data lives in `~/.leo-health/leo.db` and never leaves your machine.
 
 ## Project structure
 
-```
-## Project structure
 ```
 leo_health/
 ├── parsers/
@@ -175,8 +171,8 @@ pyproject.toml
 - [x] `leo` terminal dashboard
 - [x] `leo-watch` auto-ingest watcher
 - [x] AirDrop → auto-parse workflow
-- [ ] Linux support
 - [ ] Oura Ring CSV support
+- [ ] Linux support
 - [ ] Fitbit CSV support
 - [ ] Garmin `.fit` support
 - [ ] Leo Max — AI Health Coach *(local LLM, fully private)*
@@ -188,6 +184,7 @@ pyproject.toml
 ## Contributing
 
 Good first issues:
+- Add Oura Ring CSV parser
 - Add Fitbit CSV parser
 - Add Garmin `.fit` file support
 - Add missing Whoop metrics to schema
