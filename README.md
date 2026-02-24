@@ -155,12 +155,12 @@ FROM workouts GROUP BY activity ORDER BY sessions DESC;
 
 ## Privacy
 
-Leo Core contains zero network code. Verify it yourself:
-
+Leo Core contains zero outbound network code. Verify the entire repository yourself:
 ```bash
-grep -r "import urllib\|import http\|import requests\|import socket" leo_health/
-# Returns nothing. Zero network imports.
+grep -r "import urllib\|import http\|import requests\|import socket\|http.client\|urllib.request" .
 ```
+
+You'll see three results, all in `leo_health/dashboard.py` — these are Python stdlib imports used to run a **local web server** on your own machine (localhost only). No data is sent anywhere. No outbound connections. No tracking.
 
 Your data lives in `~/.leo-health/leo.db` and never leaves your machine.
 
