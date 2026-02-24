@@ -73,8 +73,6 @@ Leo watches your Downloads folder and automatically parses any health export the
 - Sends a macOS notification when ingestion completes
 
 **Auto-start on login:** Coming soon.
-```
-
 ---
 
 ## Query your data
