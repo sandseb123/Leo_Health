@@ -554,6 +554,103 @@ def api_workout_route(start):
     """, (start,))
 
 
+def api_workout_splits(start):
+    """Compute per-mile splits from GPS route data for a workout."""
+    import math
+    from datetime import datetime as _dt
+    KM_PER_MILE = 1.60934
+    points = _q("""
+        SELECT latitude AS lat, longitude AS lon, altitude_m AS alt, timestamp AS time
+        FROM workout_routes
+        WHERE datetime(workout_start) = datetime(?)
+        ORDER BY timestamp LIMIT 5000
+    """, (start,))
+    if not points or len(points) < 2:
+        return []
+
+    def haversine(la1, lo1, la2, lo2):
+        R = 6371
+        dLa = math.radians(la2 - la1)
+        dLo = math.radians(lo2 - lo1)
+        a = math.sin(dLa/2)**2 + math.cos(math.radians(la1)) * math.cos(math.radians(la2)) * math.sin(dLo/2)**2
+        return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    splits = []
+    cum_dist_km = 0.0
+    split_start_time = None
+    split_start_alt = None
+    mile_num = 1
+
+    for i in range(len(points)):
+        p = points[i]
+        if i == 0:
+            split_start_time = p["time"]
+            split_start_alt = p["alt"]
+            continue
+        prev = points[i - 1]
+        seg = haversine(prev["lat"], prev["lon"], p["lat"], p["lon"])
+        cum_dist_km += seg
+        cum_dist_mi = cum_dist_km / KM_PER_MILE
+
+        while cum_dist_mi >= mile_num:
+            # Crossed a mile boundary
+            overshoot_mi = cum_dist_mi - mile_num
+            overshoot_km = overshoot_mi * KM_PER_MILE
+            if seg > 0.0001:
+                frac = 1 - overshoot_km / seg
+            else:
+                frac = 1
+            try:
+                t_end = _dt.fromisoformat(p["time"].replace("Z", "+00:00"))
+                t_prev = _dt.fromisoformat(prev["time"].replace("Z", "+00:00"))
+                t_split_start = _dt.fromisoformat(split_start_time.replace("Z", "+00:00"))
+                t_boundary = t_prev + (t_end - t_prev) * frac
+                elapsed_sec = (t_boundary - t_split_start).total_seconds()
+            except Exception:
+                elapsed_sec = 0
+
+            elev_change = None
+            if p["alt"] is not None and split_start_alt is not None:
+                elev_change = round((p["alt"] - split_start_alt) * 3.28084)  # meters → feet
+
+            pace_min = int(elapsed_sec // 60)
+            pace_sec = int(elapsed_sec % 60)
+            splits.append({
+                "mile": mile_num,
+                "pace_seconds": round(elapsed_sec),
+                "pace": f"{pace_min}:{pace_sec:02d}",
+                "elev": elev_change,
+            })
+            mile_num += 1
+            split_start_time = p["time"]
+            split_start_alt = p["alt"]
+
+    # Final partial split
+    remainder_mi = (cum_dist_km / KM_PER_MILE) - (mile_num - 1)
+    if remainder_mi > 0.03 and len(points) >= 2:
+        try:
+            t_end = _dt.fromisoformat(points[-1]["time"].replace("Z", "+00:00"))
+            t_start = _dt.fromisoformat(split_start_time.replace("Z", "+00:00"))
+            elapsed_sec = (t_end - t_start).total_seconds()
+            pace_per_mi = elapsed_sec / remainder_mi if remainder_mi > 0 else 0
+            pace_min = int(pace_per_mi // 60)
+            pace_sec = int(pace_per_mi % 60)
+            elev_change = None
+            if points[-1]["alt"] is not None and split_start_alt is not None:
+                elev_change = round((points[-1]["alt"] - split_start_alt) * 3.28084)
+            splits.append({
+                "mile": mile_num,
+                "partial": round(remainder_mi, 2),
+                "pace_seconds": round(pace_per_mi),
+                "pace": f"{pace_min}:{pace_sec:02d}",
+                "elev": elev_change,
+            })
+        except Exception:
+            pass
+
+    return splits
+
+
 def api_recovery(days=30):
     s = _since(days)
     whoop = _q("""
@@ -599,6 +696,8 @@ def api_workouts(days=30):
                ROUND(w.calories, 0)              AS calories,
                ROUND(w.distance_km, 2)           AS distance_km,
                w.source,
+               ROUND(w.active_calories, 0)       AS active_calories,
+               ROUND(w.avg_cadence, 0)           AS avg_cadence,
                (SELECT ROUND(AVG(h.value), 0)
                 FROM heart_rate h
                 WHERE h.metric = 'heart_rate'
@@ -616,13 +715,13 @@ def api_workouts(days=30):
         FROM workouts w
         WHERE w.recorded_at >= ?
           AND w.rowid = (
-                SELECT MIN(w2.rowid) FROM workouts w2
+                SELECT MAX(w2.rowid) FROM workouts w2
                 WHERE w2.recorded_at = w.recorded_at
                   AND w2.activity IS w.activity
                   AND COALESCE(w2.source,'') = COALESCE(w.source,'')
           )
         ORDER BY w.recorded_at DESC
-        LIMIT 60
+        LIMIT 500
     """, (_since(days),))
 
 
@@ -664,10 +763,14 @@ header{position:sticky;top:0;z-index:100;
 .badges{display:flex;gap:5px}
 .badge{font-size:10px;padding:2px 7px;border-radius:4px;background:rgba(255,255,255,0.06);color:var(--dim)}
 .crange{display:flex;background:rgba(255,255,255,0.04);border-radius:7px;padding:2px;gap:1px}
-.crbtn{background:none;border:none;color:var(--muted);padding:2px 9px;border-radius:5px;
+.crbtn{background:none;border:none;color:var(--muted);padding:2px 7px;border-radius:5px;
   font-size:11px;cursor:pointer;transition:all .15s;font-family:inherit;letter-spacing:.2px}
 .crbtn:hover{color:var(--text)}
 .crbtn.on{background:rgba(255,255,255,0.1);color:var(--text);font-weight:500}
+#globalRange{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+#globalRange .gr-lbl{font-size:11px;color:var(--muted);letter-spacing:.4px;text-transform:uppercase;white-space:nowrap}
+#globalRange .crange{padding:3px 4px;gap:2px}
+#globalRange .crbtn{padding:3px 11px;font-size:12px}
 
 /* ── Layout ─────────────────────────────────────────────────────────── */
 main{max-width:1360px;margin:0 auto;padding:28px 28px 60px}
@@ -739,7 +842,7 @@ canvas{display:block;width:100%}
 .wo.open .wo-chev{transform:rotate(90deg)}
 /* Expandable detail panel */
 .wo-detail{max-height:0;overflow:hidden;transition:max-height .3s ease}
-.wo.open .wo-detail{max-height:700px}
+.wo.open .wo-detail{max-height:1400px}
 .wo-detail-inner{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));
   gap:10px 16px;padding:0 14px 10px 46px}
 .wo-stat{display:flex;flex-direction:column;gap:2px}
@@ -766,6 +869,22 @@ canvas{display:block;width:100%}
 .wo-zone-item{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--dim)}
 .wo-zone-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
 .wo-zone-time{color:var(--muted);font-size:9px;margin-left:1px}
+/* ── Splits table ─────────────────────────────────────────────────────── */
+.wo-splits{padding:4px 14px 14px}
+.wo-splits-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px}
+.wo-splits-tbl{width:100%;border-collapse:collapse}
+.wo-splits-tbl th{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;
+  font-weight:500;text-align:left;padding:4px 8px 6px;border-bottom:1px solid var(--border)}
+.wo-splits-tbl th:last-child{text-align:right}
+.wo-splits-tbl td{font-size:12px;padding:6px 8px;border-bottom:1px solid rgba(255,255,255,0.03)}
+.wo-splits-tbl tr:nth-child(even) td{background:rgba(255,255,255,0.015)}
+.wo-splits-tbl tr:hover td{background:rgba(255,255,255,0.04)}
+.wo-split-km{font-weight:500;color:var(--dim);width:50px}
+.wo-split-pace{font-weight:600;font-size:13px;font-variant-numeric:tabular-nums}
+.wo-split-bar-cell{width:40%;padding-right:12px!important}
+.wo-split-bar{height:6px;border-radius:3px;min-width:4px;transition:width .3s}
+.wo-split-elev{text-align:right;color:var(--dim);font-size:11px;font-variant-numeric:tabular-nums}
+.wo-split-partial{color:var(--muted);font-style:italic}
 
 /* ── Tooltip ─────────────────────────────────────────────────────────── */
 #tt{position:fixed;background:rgba(14,14,26,.95);border:1px solid rgba(255,255,255,.12);
@@ -816,30 +935,73 @@ canvas{display:block;width:100%}
 </header>
 
 <main>
+  <!-- Global time range -->
+  <div id="globalRange">
+    <span class="gr-lbl">Time Range</span>
+    <div class="crange" data-chart="global">
+      <button class="crbtn on" data-d="7">7D</button>
+      <button class="crbtn" data-d="30">30D</button>
+      <button class="crbtn" data-d="90">3M</button>
+      <button class="crbtn" data-d="180">6M</button>
+    </div>
+  </div>
+
   <!-- Summary row -->
   <div class="stats-row" id="statsRow"></div>
 
-  <!-- HRV + RHR -->
+  <!-- HRV + Respiration Rate -->
   <div class="two">
     <div class="card">
       <div class="card-hdr">
         <div class="card-title"><div class="dot" style="background:var(--hrv)"></div>HRV</div>
         <div class="crange" data-chart="hrv">
           <button class="crbtn on" data-d="7">7D</button>
-          <button class="crbtn" data-d="14">14D</button>
           <button class="crbtn" data-d="30">30D</button>
+          <button class="crbtn" data-d="90">3M</button>
+          <button class="crbtn" data-d="180">6M</button>
         </div>
         <div class="card-stat"><div class="card-stat-val" id="hrvVal" style="color:var(--hrv)">—</div><div class="card-stat-lbl">avg ms</div></div>
       </div>
       <div class="chart-wrap"><canvas id="hrvC" height="140"></canvas><canvas class="overlay" id="hrvO" height="140"></canvas></div>
+    </div>
+    <div class="card" id="respCard">
+      <div class="card-hdr">
+        <div class="card-title"><div class="dot" style="background:var(--resp)"></div>Respiration Rate</div>
+        <div class="crange" data-chart="resp">
+          <button class="crbtn on" data-d="7">7D</button>
+          <button class="crbtn" data-d="30">30D</button>
+          <button class="crbtn" data-d="90">3M</button>
+          <button class="crbtn" data-d="180">6M</button>
+        </div>
+        <div class="card-stat"><div class="card-stat-val" id="respVal" style="color:var(--resp)">—</div><div class="card-stat-lbl">avg br/min</div></div>
+      </div>
+      <div class="chart-wrap"><canvas id="respC" height="140"></canvas><canvas class="overlay" id="respO" height="140"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Blood Oxygen + Resting HR -->
+  <div class="two">
+    <div class="card" id="spo2Card">
+      <div class="card-hdr">
+        <div class="card-title"><div class="dot" style="background:var(--spo2)"></div>Blood Oxygen</div>
+        <div class="crange" data-chart="spo2">
+          <button class="crbtn on" data-d="7">7D</button>
+          <button class="crbtn" data-d="30">30D</button>
+          <button class="crbtn" data-d="90">3M</button>
+          <button class="crbtn" data-d="180">6M</button>
+        </div>
+        <div class="card-stat"><div class="card-stat-val" id="spo2Val" style="color:var(--spo2)">—</div><div class="card-stat-lbl">avg SpO₂ %</div></div>
+      </div>
+      <div class="chart-wrap"><canvas id="spo2C" height="140"></canvas><canvas class="overlay" id="spo2O" height="140"></canvas></div>
     </div>
     <div class="card">
       <div class="card-hdr">
         <div class="card-title"><div class="dot" style="background:#ff6b6b"></div>Resting HR</div>
         <div class="crange" data-chart="rhr">
           <button class="crbtn on" data-d="7">7D</button>
-          <button class="crbtn" data-d="14">14D</button>
           <button class="crbtn" data-d="30">30D</button>
+          <button class="crbtn" data-d="90">3M</button>
+          <button class="crbtn" data-d="180">6M</button>
         </div>
         <div class="card-stat"><div class="card-stat-val" id="rhrVal" style="color:#ff6b6b">—</div><div class="card-stat-lbl">avg bpm</div></div>
       </div>
@@ -853,40 +1015,13 @@ canvas{display:block;width:100%}
       <div class="card-title"><div class="dot" style="background:#ff9f43"></div>Heart Rate</div>
       <div class="crange" data-chart="hr">
         <button class="crbtn on" data-d="7">7D</button>
-        <button class="crbtn" data-d="14">14D</button>
         <button class="crbtn" data-d="30">30D</button>
+        <button class="crbtn" data-d="90">3M</button>
+        <button class="crbtn" data-d="180">6M</button>
       </div>
       <div class="card-stat"><div class="card-stat-val" id="hrVal" style="color:#ff9f43">—</div><div class="card-stat-lbl">avg bpm</div></div>
     </div>
     <div class="chart-wrap"><canvas id="hrC" height="128"></canvas><canvas class="overlay" id="hrO" height="128"></canvas></div>
-  </div>
-
-  <!-- Blood Oxygen + Respiration Rate -->
-  <div class="two">
-    <div class="card" id="spo2Card">
-      <div class="card-hdr">
-        <div class="card-title"><div class="dot" style="background:var(--spo2)"></div>Blood Oxygen</div>
-        <div class="crange" data-chart="spo2">
-          <button class="crbtn on" data-d="7">7D</button>
-          <button class="crbtn" data-d="14">14D</button>
-          <button class="crbtn" data-d="30">30D</button>
-        </div>
-        <div class="card-stat"><div class="card-stat-val" id="spo2Val" style="color:var(--spo2)">—</div><div class="card-stat-lbl">avg SpO₂ %</div></div>
-      </div>
-      <div class="chart-wrap"><canvas id="spo2C" height="140"></canvas><canvas class="overlay" id="spo2O" height="140"></canvas></div>
-    </div>
-    <div class="card" id="respCard">
-      <div class="card-hdr">
-        <div class="card-title"><div class="dot" style="background:var(--resp)"></div>Respiration Rate</div>
-        <div class="crange" data-chart="resp">
-          <button class="crbtn on" data-d="7">7D</button>
-          <button class="crbtn" data-d="14">14D</button>
-          <button class="crbtn" data-d="30">30D</button>
-        </div>
-        <div class="card-stat"><div class="card-stat-val" id="respVal" style="color:var(--resp)">—</div><div class="card-stat-lbl">avg br/min</div></div>
-      </div>
-      <div class="chart-wrap"><canvas id="respC" height="140"></canvas><canvas class="overlay" id="respO" height="140"></canvas></div>
-    </div>
   </div>
 
   <!-- VO2 Max -->
@@ -895,8 +1030,8 @@ canvas{display:block;width:100%}
       <div class="card-title"><div class="dot" style="background:var(--vo2)"></div>VO₂ Max</div>
       <div class="crange" data-chart="vo2">
         <button class="crbtn on" data-d="30">30D</button>
-        <button class="crbtn" data-d="90">90D</button>
-        <button class="crbtn" data-d="180">180D</button>
+        <button class="crbtn" data-d="90">3M</button>
+        <button class="crbtn" data-d="180">6M</button>
       </div>
       <div class="card-stat"><div class="card-stat-val" id="vo2Val" style="color:var(--vo2)">—</div><div class="card-stat-lbl">ml/kg/min</div></div>
     </div>
@@ -909,8 +1044,9 @@ canvas{display:block;width:100%}
       <div class="card-title"><div class="dot" style="background:var(--sleep-deep)"></div>Sleep</div>
       <div class="crange" data-chart="sleep">
         <button class="crbtn on" data-d="7">7D</button>
-        <button class="crbtn" data-d="14">14D</button>
         <button class="crbtn" data-d="30">30D</button>
+        <button class="crbtn" data-d="90">3M</button>
+        <button class="crbtn" data-d="180">6M</button>
       </div>
       <div class="card-stat"><div class="card-stat-val" id="sleepVal" style="color:var(--sleep-deep)">—</div><div class="card-stat-lbl">avg hours</div></div>
       <div class="card-stat" id="effStat" style="display:none"><div class="card-stat-val" id="effVal" style="color:#32ade6">—</div><div class="card-stat-lbl">efficiency %</div></div>
@@ -931,8 +1067,9 @@ canvas{display:block;width:100%}
         <div class="card-title"><div class="dot" style="background:var(--rec)"></div>Whoop Recovery</div>
         <div class="crange" data-chart="rec">
           <button class="crbtn on" data-d="7">7D</button>
-          <button class="crbtn" data-d="14">14D</button>
           <button class="crbtn" data-d="30">30D</button>
+          <button class="crbtn" data-d="90">3M</button>
+          <button class="crbtn" data-d="180">6M</button>
         </div>
         <div class="card-stat"><div class="card-stat-val" id="whoopVal" style="color:var(--rec)">—</div><div class="card-stat-lbl">avg %</div></div>
       </div>
@@ -943,8 +1080,9 @@ canvas{display:block;width:100%}
         <div class="card-title"><div class="dot" style="background:var(--read)"></div>Oura Readiness</div>
         <div class="crange" data-chart="rec">
           <button class="crbtn on" data-d="7">7D</button>
-          <button class="crbtn" data-d="14">14D</button>
           <button class="crbtn" data-d="30">30D</button>
+          <button class="crbtn" data-d="90">3M</button>
+          <button class="crbtn" data-d="180">6M</button>
         </div>
         <div class="card-stat"><div class="card-stat-val" id="ouraVal" style="color:var(--read)">—</div><div class="card-stat-lbl">avg score</div></div>
       </div>
@@ -958,8 +1096,9 @@ canvas{display:block;width:100%}
       <div class="card-title"><div class="dot" style="background:var(--strain)"></div>Whoop Strain</div>
       <div class="crange" data-chart="rec">
         <button class="crbtn on" data-d="7">7D</button>
-        <button class="crbtn" data-d="14">14D</button>
         <button class="crbtn" data-d="30">30D</button>
+        <button class="crbtn" data-d="90">3M</button>
+        <button class="crbtn" data-d="180">6M</button>
       </div>
       <div class="card-stat"><div class="card-stat-val" id="strainVal" style="color:var(--strain)">—</div><div class="card-stat-lbl">avg / 21</div></div>
     </div>
@@ -972,8 +1111,9 @@ canvas{display:block;width:100%}
       <div class="card-title"><div class="dot" style="background:var(--temp)"></div>Body Temperature</div>
       <div class="crange" data-chart="temp">
         <button class="crbtn on" data-d="7">7D</button>
-        <button class="crbtn" data-d="14">14D</button>
         <button class="crbtn" data-d="30">30D</button>
+        <button class="crbtn" data-d="90">3M</button>
+        <button class="crbtn" data-d="180">6M</button>
       </div>
       <div class="card-stat"><div class="card-stat-val" id="tempVal" style="color:var(--temp)">—</div><div class="card-stat-lbl" id="tempLbl">deviation °C</div></div>
     </div>
@@ -986,8 +1126,9 @@ canvas{display:block;width:100%}
       <div class="card-title"><div class="dot" style="background:var(--workout)"></div>Workouts</div>
       <div class="crange" data-chart="wo">
         <button class="crbtn on" data-d="7">7D</button>
-        <button class="crbtn" data-d="14">14D</button>
         <button class="crbtn" data-d="30">30D</button>
+        <button class="crbtn" data-d="90">3M</button>
+        <button class="crbtn" data-d="180">6M</button>
       </div>
     </div>
     <div id="woList"></div>
@@ -1014,7 +1155,8 @@ const C = {
 };
 
 // ── State & utils ─────────────────────────────────────────────────────────────
-const D = {hr:7, hrv:7, rhr:7, sleep:7, rec:7, wo:7, spo2:7, resp:7, temp:7, vo2:30};
+const D_DEFAULTS = {hr:7, hrv:7, rhr:7, sleep:7, rec:7, wo:7, spo2:7, resp:7, temp:7, vo2:30};
+const D = Object.assign({}, D_DEFAULTS, JSON.parse(localStorage.getItem('leo-D') || 'null'));
 const cache = {};
 const $ = id => document.getElementById(id);
 const fmt = (n, d=0) => n == null ? '—' : (+n).toFixed(d);
@@ -1451,6 +1593,26 @@ function drawWoHR(canvasId, data) {
       cx.fillText(Math.round(mx - rng*f), pad.l-4, y);
     });
 
+    // X-axis elapsed time labels
+    if (pts[0].t && pts[pts.length-1].t) {
+      const t0 = new Date(pts[0].t), tN = new Date(pts[pts.length-1].t);
+      const totalMs = tN - t0;
+      if (totalMs > 0) {
+        cx.fillStyle = 'rgba(255,255,255,0.28)';
+        cx.font = '9px -apple-system,sans-serif';
+        cx.textBaseline = 'top';
+        // Pick ~4-5 nice labels
+        const totalMin = totalMs / 60000;
+        const step = totalMin <= 15 ? 5 : totalMin <= 30 ? 10 : totalMin <= 60 ? 15 : 30;
+        for (let m = 0; m <= totalMin; m += step) {
+          const frac = m / totalMin;
+          const x = pad.l + frac * cw;
+          cx.textAlign = m === 0 ? 'left' : (frac > 0.95 ? 'right' : 'center');
+          cx.fillText(`${m}:00`, x, pad.t + ch + 4);
+        }
+      }
+    }
+
     // Fill
     const grad = cx.createLinearGradient(0, pad.t, 0, pad.t+ch);
     grad.addColorStop(0, C.hr+'40'); grad.addColorStop(1, C.hr+'04');
@@ -1482,10 +1644,6 @@ function drawWoHR(canvasId, data) {
     cx.textAlign = 'left'; cx.textBaseline = 'bottom';
     cx.fillText(`▲ ${maxV}`, pad.l+2, maxY-1);
 
-    // Avg label
-    cx.fillStyle = 'rgba(255,255,255,0.35)'; cx.font = '9px -apple-system,sans-serif';
-    cx.textAlign = 'right'; cx.textBaseline = 'alphabetic';
-    cx.fillText(`avg ${avgV} bpm`, w-pad.r, h-2);
   }
 
   function drawHover(mouseX) {
@@ -1535,7 +1693,9 @@ function drawWoHR(canvasId, data) {
     let tx = pt.x - tipW/2;
     if (tx < pad.l) tx = pad.l;
     if (tx + tipW > w - 4) tx = w - 4 - tipW;
-    const ty = pt.y - tipH - 12 < pad.t ? pt.y + 10 : pt.y - tipH - 12;
+    let ty = pt.y - tipH - 12;
+    if (ty < pad.t) ty = pt.y + 10;
+    if (ty + tipH > h) ty = h - tipH - 2;
 
     // Bubble background
     cx.fillStyle = 'rgba(12,12,22,0.93)';
@@ -1615,7 +1775,8 @@ function drawRouteMap(canvasId, points, elevCanvasId) {
     ctx.beginPath(); ctx.moveTo(PAD, gy); ctx.lineTo(W-PAD, gy); ctx.stroke();
   });
 
-  // Pace calculation per segment (min/km)
+  // Pace calculation per segment (min/mi)
+  const KM_PER_MI = 1.60934;
   function haversineKm(la1, lo1, la2, lo2) {
     const R = 6371, dLa = (la2-la1)*Math.PI/180, dLo = (lo2-lo1)*Math.PI/180;
     const a = Math.sin(dLa/2)**2 + Math.cos(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.sin(dLo/2)**2;
@@ -1624,7 +1785,8 @@ function drawRouteMap(canvasId, points, elevCanvasId) {
   const rawPaces = points.slice(1).map((p,i) => {
     const dt = p.time && points[i].time ? (new Date(p.time)-new Date(points[i].time))/60000 : 0;
     const km = haversineKm(+points[i].lat, +points[i].lon, +p.lat, +p.lon);
-    return (km > 0.0001 && dt > 0 && dt < 5) ? dt/km : null;
+    const mi = km / KM_PER_MI;
+    return (mi > 0.00006 && dt > 0 && dt < 5) ? dt/mi : null;
   });
   // Smooth with a 5-sample running average
   const pSmooth = rawPaces.map((_,i) => {
@@ -1678,9 +1840,9 @@ function drawRouteMap(canvasId, points, elevCanvasId) {
   ctx.fillStyle = 'rgba(255,255,255,0.4)';
   ctx.font = '8px -apple-system,sans-serif';
   ctx.textAlign = 'left';  ctx.textBaseline = 'bottom';
-  ctx.fillText(`${fmtPace(pFast)}/km`, PAD, H-PAD-17);
+  ctx.fillText(`${fmtPace(pFast)}/mi`, PAD, H-PAD-17);
   ctx.textAlign = 'right';
-  ctx.fillText(`${fmtPace(pSlow)}/km`, PAD+80, H-PAD-17);
+  ctx.fillText(`${fmtPace(pSlow)}/mi`, PAD+80, H-PAD-17);
 
   if (elevCanvasId) drawElevationProfile(elevCanvasId, points);
 }
@@ -1723,7 +1885,8 @@ function drawElevationProfile(canvasId, points) {
   for (let i = 1; i < alts.length; i++) if (alts[i] > alts[i-1]) gain += alts[i]-alts[i-1];
   ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.font = '9px -apple-system,sans-serif';
   ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
-  ctx.fillText(`↑ ${Math.round(gain)} m gain  ·  ${Math.round(mn)}–${Math.round(mx)} m alt`, PAD.l+4, H-2);
+  const gainFt = Math.round(gain * 3.28084), mnFt = Math.round(mn * 3.28084), mxFt = Math.round(mx * 3.28084);
+  ctx.fillText(`↑ ${gainFt} ft gain  ·  ${mnFt}–${mxFt} ft alt`, PAD.l+4, H-2);
   ctx.textAlign = 'right';
   ctx.fillText('Elevation', W-PAD.r-4, H-2);
 
@@ -1773,6 +1936,55 @@ function renderHRZones(el, vals, workoutMax) {
   </div>`;
 }
 
+// ── Splits table for running workouts ──────────────────────────────────────────
+function renderSplits(el, splits) {
+  if (!el || !splits || splits.length < 1) return;
+  // Find fastest & slowest for colour scaling
+  const paces = splits.map(s => s.pace_seconds).filter(v => v > 0);
+  if (!paces.length) return;
+  const fastest = Math.min(...paces);
+  const slowest = Math.max(...paces);
+  const range   = slowest - fastest || 1;
+
+  function paceColor(sec) {
+    const t = Math.max(0, Math.min(1, (sec - fastest) / range));
+    // green (fast) → yellow (mid) → orange-red (slow)
+    if (t < 0.5) {
+      const u = t * 2;
+      return `rgb(${Math.round(48 + 207*u)},${Math.round(209 + 5*u)},${Math.round(88 - 88*u)})`;
+    }
+    const u = (t - 0.5) * 2;
+    return `rgb(255,${Math.round(214 - 154*u)},${Math.round(60*u)})`;
+  }
+
+  const avgPace = paces.length ? Math.round(paces.reduce((a,b)=>a+b,0)/paces.length) : 0;
+  const avgMin  = Math.floor(avgPace / 60);
+  const avgSec  = avgPace % 60;
+
+  const rows = splits.map(s => {
+    const pct  = s.pace_seconds > 0 ? Math.max(8, Math.round((1 - (s.pace_seconds - fastest) / (range || 1)) * 100)) : 50;
+    const clr  = paceColor(s.pace_seconds);
+    const isPartial = s.partial != null;
+    const miLabel = isPartial ? `${s.partial} mi` : `${s.mile}`;
+    const paceClass = isPartial ? 'wo-split-pace wo-split-partial' : 'wo-split-pace';
+    const elevStr = s.elev != null ? (s.elev >= 0 ? `+${s.elev}ft` : `${s.elev}ft`) : '';
+    return `<tr>
+      <td class="wo-split-km">${miLabel}</td>
+      <td class="${paceClass}" style="color:${clr}">${s.pace} <span style="font-size:10px;font-weight:400;color:var(--muted)">/mi</span></td>
+      <td class="wo-split-bar-cell"><div class="wo-split-bar" style="width:${pct}%;background:${clr}"></div></td>
+      <td class="wo-split-elev">${elevStr}</td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `<div class="wo-splits">
+    <div class="wo-splits-lbl">Splits <span style="font-size:9px;color:rgba(240,240,248,0.25);font-weight:400;letter-spacing:0;margin-left:6px">avg ${avgMin}:${String(avgSec).padStart(2,'0')} /mi</span></div>
+    <table class="wo-splits-tbl">
+      <thead><tr><th>Mile</th><th>Pace</th><th></th><th style="text-align:right">Elev</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
 // ── Load workout detail (HR chart + route) ────────────────────────────────────
 async function loadWoDetail(el, idx) {
   const start    = el.dataset.start;
@@ -1805,7 +2017,11 @@ async function loadWoDetail(el, idx) {
 
   const ROUTE_ACTS = new Set(['running','cycling','walking','hiking','skiing','snowboarding']);
   if (ROUTE_ACTS.has(activity)) {
-    const route = await get(`/api/workout-route?start=${encodeURIComponent(start)}`);
+    // Fetch route and splits in parallel
+    const [route, splits] = await Promise.all([
+      get(`/api/workout-route?start=${encodeURIComponent(start)}`),
+      get(`/api/workout-splits?start=${encodeURIComponent(start)}`)
+    ]);
     const rtWrap = $(`woRtWrap${idx}`);
     if (route && route.length >= 2) {
       drawRouteMap(`woRtC${idx}`, route, `woElC${idx}`);
@@ -1816,10 +2032,14 @@ async function loadWoDetail(el, idx) {
         for (let i = 1; i < alts.length; i++) if (alts[i] > alts[i-1]) gain += alts[i]-alts[i-1];
         const elevEl = $(`woElev${idx}`);
         if (elevEl) elevEl.innerHTML =
-          `<div class="wo-stat-val">${Math.round(gain)} <span style="font-size:10px;font-weight:400">m</span></div><div class="wo-stat-lbl">Elevation Gain</div>`;
+          `<div class="wo-stat-val">${Math.round(gain * 3.28084)} <span style="font-size:10px;font-weight:400">ft</span></div><div class="wo-stat-lbl">Elevation Gain</div>`;
       }
     } else if (rtWrap) {
       rtWrap.style.display = 'none';
+    }
+    // Render per-km splits
+    if (splits && splits.length >= 1) {
+      renderSplits($(`woSplits${idx}`), splits);
     }
   }
 }
@@ -1836,18 +2056,24 @@ function renderWorkouts(data) {
     const name = woName(w.activity);
     const dur  = w.duration  ? Math.round(w.duration) + 'm'          : '';
     const cals = w.calories  ? Math.round(w.calories) + ' kcal'      : '';
-    const dist = w.distance_km ? (+w.distance_km).toFixed(2) + ' km' : '';
-    const pace = (w.duration && w.distance_km && w.distance_km > 0)
-                   ? Math.floor(w.duration / w.distance_km) + ':' +
-                     String(Math.round((w.duration / w.distance_km % 1) * 60)).padStart(2,'0') + ' /km'
+    const activeCals = w.active_calories ? Math.round(w.active_calories) + ' kcal' : '';
+    const distMi = w.distance_km ? (+w.distance_km / 1.60934) : 0;
+    const dist = distMi ? distMi.toFixed(2) + ' mi' : '';
+    const pacePerMi = (w.duration && distMi > 0) ? w.duration / distMi : 0;
+    const pace = pacePerMi
+                   ? Math.floor(pacePerMi) + ':' +
+                     String(Math.round((pacePerMi % 1) * 60)).padStart(2,'0') + ' /mi'
                    : '';
+    const cadence = w.avg_cadence ? Math.round(w.avg_cadence) + ' spm' : '';
     const canRoute = ROUTE_ACTS.has(key);
 
     const stats = [
       dur   && `<div class="wo-stat"><div class="wo-stat-val">${dur}</div><div class="wo-stat-lbl">Duration</div></div>`,
       dist  && `<div class="wo-stat"><div class="wo-stat-val">${dist}</div><div class="wo-stat-lbl">Distance</div></div>`,
-      cals  && `<div class="wo-stat"><div class="wo-stat-val">${cals}</div><div class="wo-stat-lbl">Calories</div></div>`,
-      pace  && `<div class="wo-stat"><div class="wo-stat-val">${pace}</div><div class="wo-stat-lbl">Pace</div></div>`,
+      pace  && `<div class="wo-stat"><div class="wo-stat-val">${pace}</div><div class="wo-stat-lbl">Avg Pace</div></div>`,
+      activeCals && `<div class="wo-stat"><div class="wo-stat-val" style="color:var(--workout)">${activeCals}</div><div class="wo-stat-lbl">Active Cal</div></div>`,
+      cals  && `<div class="wo-stat"><div class="wo-stat-val">${cals}</div><div class="wo-stat-lbl">Total Cal</div></div>`,
+      cadence && `<div class="wo-stat"><div class="wo-stat-val">${cadence}</div><div class="wo-stat-lbl">Avg Cadence</div></div>`,
       `<div class="wo-stat" id="woAvgHR${idx}"></div>`,
       `<div class="wo-stat" id="woMaxHR${idx}"></div>`,
       w.source && `<div class="wo-stat"><div class="wo-stat-val" style="font-size:11px;font-weight:400">${w.source.replace('_',' ')}</div><div class="wo-stat-lbl">Source</div></div>`,
@@ -1884,6 +2110,7 @@ function renderWorkouts(data) {
           </div>
         </div>
         <div id="woZones${idx}"></div>
+        ${canRoute ? `<div id="woSplits${idx}"></div>` : ''}
         ${canRoute ? `<div class="wo-route-section" id="woRtWrap${idx}">
           <div class="wo-route-lbl">GPS Route</div>
           <canvas id="woRtC${idx}" class="wo-route-canvas"></canvas>
@@ -2230,7 +2457,7 @@ function attachSleepHover(data) {
     const sleepH = (n.deep||0) + (n.rem||0) + (n.light||0);
 
     // ── Card geometry ──────────────────────────────────────────────────────
-    const CW = 350, CH = 210;
+    const CW = 350, CH = 200;
     const barCx = barX + barW / 2;
     let cx0 = barCx > W / 2 ? barX - CW - 6 : barX + barW + 6;
     cx0 = Math.max(4, Math.min(cx0, W - CW - 4));
@@ -2252,7 +2479,7 @@ function attachSleepHover(data) {
     ctx.fillText(hm(sleepH) + ' sleep', cx0+13, cy0+25);
 
     // ── Hypnogram area ─────────────────────────────────────────────────────
-    const HP = { l: cx0+54, r: cx0+CW-14, t: cy0+52, b: cy0+CH-36 };
+    const HP = { l: cx0+62, r: cx0+CW-14, t: cy0+52, b: cy0+CH-26 };
     const HW = HP.r - HP.l, HH = HP.b - HP.t;
     const rowH = HH / 4;
 
@@ -2274,16 +2501,26 @@ function attachSleepHover(data) {
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText('No stage detail in database', HP.l + HW/2, HP.t + HH/2);
     } else {
-      // ── Row labels + dashed guide lines ──────────────────────────────────
+      // ── Row labels with durations + dashed separators ───────────────────
+      const ROW_KEYS = ['awake','rem','light','deep'];
       ROW_LABELS.forEach((lbl, r) => {
-        const ly = HP.t + r * rowH + rowH / 2;
-        ctx.setLineDash([2,5]); ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(HP.l, ly); ctx.lineTo(HP.r, ly); ctx.stroke();
-        ctx.setLineDash([]);
+        const rowTop = HP.t + r * rowH;
+        // Stage name in stage color
         ctx.fillStyle = ROW_COLORS[r];
-        ctx.font = 'bold 8px -apple-system,sans-serif';
-        ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-        ctx.fillText(lbl, HP.l - 5, ly);
+        ctx.font = 'bold 9px -apple-system,sans-serif';
+        ctx.textAlign = 'right'; ctx.textBaseline = 'top';
+        ctx.fillText(lbl, HP.l - 8, rowTop + rowH*0.1);
+        // Duration in white below
+        ctx.fillStyle = 'rgba(255,255,255,0.88)';
+        ctx.font = '8px -apple-system,sans-serif';
+        ctx.fillText(hm(n[ROW_KEYS[r]]||0), HP.l - 8, rowTop + rowH*0.1 + 12);
+        // Dashed separator between rows (not last)
+        if (r < 3) {
+          const sepY = rowTop + rowH;
+          ctx.setLineDash([3,4]); ctx.strokeStyle = 'rgba(255,255,255,0.22)'; ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(HP.l, sepY); ctx.lineTo(HP.r, sepY); ctx.stroke();
+          ctx.setLineDash([]);
+        }
       });
 
       // ── Time mapping ──────────────────────────────────────────────────────
@@ -2325,30 +2562,13 @@ function attachSleepHover(data) {
       });
 
       // Time axis labels
-      ctx.fillStyle = 'rgba(255,255,255,0.25)';
-      ctx.font = '8px -apple-system,sans-serif';
-      ctx.textAlign = 'left';  ctx.textBaseline = 'top';
-      ctx.fillText(fmt12(segs[0].start),               HP.l,      HP.b+5);
-      ctx.textAlign = 'right';
-      ctx.fillText(fmt12(segs[segs.length-1].end),     HP.r,      HP.b+5);
-    }
-
-    // ── Stage totals footer ────────────────────────────────────────────────
-    const activeCols = TOTAL_COLS.filter(c => (n[c.key]||0) > 0);
-    const colW = (CW - 24) / Math.max(activeCols.length, 1);
-    activeCols.forEach((c, i) => {
-      const gx = cx0 + 12 + i * colW;
-      const gy = cy0 + CH - 28;
-      ctx.fillStyle = c.color;
-      ctx.beginPath(); ctx.arc(gx+5, gy+5, 3, 0, Math.PI*2); ctx.fill();
-      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.fillStyle = 'rgba(255,255,255,0.38)';
       ctx.font = '9px -apple-system,sans-serif';
       ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-      ctx.fillText(c.label, gx+12, gy);
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 9px -apple-system,sans-serif';
-      ctx.fillText(hm(n[c.key]), gx+12, gy+11);
-    });
+      ctx.fillText(fmt12(segs[0].start), HP.l, HP.b+6);
+      ctx.textAlign = 'right';
+      ctx.fillText(fmt12(segs[segs.length-1].end), HP.r, HP.b+6);
+    }
   }
 
   // ── Event handlers ─────────────────────────────────────────────────────────
@@ -2480,10 +2700,31 @@ const LOADERS = {
   spo2:loadBloodOxygen, hrv:loadHRV, rhr:loadRHR, hr:loadHR,
   resp:loadRespiration, vo2:loadVO2Max, sleep:loadSleep, rec:loadRecovery, wo:loadWorkouts, temp:loadTemperature,
 };
-document.querySelectorAll('.crange').forEach(group=>{
+function saveD() { localStorage.setItem('leo-D', JSON.stringify(D)); }
+
+// ── Global range selector ──────────────────────────────────────────────────────
+const ALL_CHARTS = Object.keys(D_DEFAULTS);
+document.querySelector('.crange[data-chart="global"]')?.querySelectorAll('.crbtn').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    const days = +btn.dataset.d;
+    // Update all chart D values and mark active in per-chart ranges
+    ALL_CHARTS.forEach(k=>{ D[k] = days; });
+    document.querySelectorAll('.crange:not([data-chart="global"])').forEach(g=>{
+      g.querySelectorAll('.crbtn').forEach(b=>b.classList.remove('on'));
+      g.querySelector(`.crbtn[data-d="${days}"]`)?.classList.add('on');
+    });
+    // Mark active global button
+    document.querySelectorAll('.crange[data-chart="global"] .crbtn').forEach(b=>b.classList.remove('on'));
+    btn.classList.add('on');
+    saveD();
+    loadAll();
+  });
+});
+
+// ── Per-card range buttons ────────────────────────────────────────────────────
+document.querySelectorAll('.crange:not([data-chart="global"])').forEach(group=>{
   group.querySelectorAll('.crbtn').forEach(btn=>{
     btn.addEventListener('click', ()=>{
-      // Only toggle buttons in this specific group
       group.querySelectorAll('.crbtn').forEach(b=>b.classList.remove('on'));
       btn.classList.add('on');
       const chart = group.dataset.chart;
@@ -2493,10 +2734,29 @@ document.querySelectorAll('.crange').forEach(group=>{
         g.querySelectorAll('.crbtn').forEach(b=>b.classList.remove('on'));
         g.querySelector(`.crbtn[data-d="${btn.dataset.d}"]`)?.classList.add('on');
       });
+      // Deactivate global button since charts are now mixed
+      document.querySelectorAll('.crange[data-chart="global"] .crbtn').forEach(b=>b.classList.remove('on'));
+      saveD();
       LOADERS[chart]?.();
     });
   });
 });
+
+// ── Restore saved range button states on load ──────────────────────────────────
+(function restoreRangeUI(){
+  ALL_CHARTS.forEach(k=>{
+    const days = D[k];
+    document.querySelectorAll(`.crange[data-chart="${k}"] .crbtn`).forEach(b=>b.classList.remove('on'));
+    document.querySelectorAll(`.crange[data-chart="${k}"] .crbtn[data-d="${days}"]`).forEach(b=>b.classList.add('on'));
+  });
+  // If all non-VO2 charts share same value, highlight that global button
+  const nonVO2 = ALL_CHARTS.filter(k=>k!=='vo2');
+  const uniq = [...new Set(nonVO2.map(k=>D[k]))];
+  if (uniq.length === 1) {
+    document.querySelectorAll('.crange[data-chart="global"] .crbtn').forEach(b=>b.classList.remove('on'));
+    document.querySelector(`.crange[data-chart="global"] .crbtn[data-d="${uniq[0]}"]`)?.classList.add('on');
+  }
+})();
 
 // ── Resize: redraw from cache ──────────────────────────────────────────────────
 window.addEventListener('resize', ()=>{
@@ -2573,6 +2833,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             "/api/sleep-stages":  lambda: api_sleep_stages(date),
             "/api/workout-hr":    lambda: api_workout_hr(start, end),
             "/api/workout-route": lambda: api_workout_route(start),
+            "/api/workout-splits": lambda: api_workout_splits(start),
         }
         if p.path in routes:
             self._json(routes[p.path]())
@@ -2683,9 +2944,6 @@ def main():
         except KeyboardInterrupt:
             print("\n  Stopped. Your data stays on your machine. 🔒\n")
 
-
-if __name__ == "__main__":
-    main()
 
 if __name__ == "__main__":
     main()
