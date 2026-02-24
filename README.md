@@ -1,8 +1,8 @@
 # Leo Health 🫀
 
-> Your Apple Health and Whoop data, as a SQL database. In 60 seconds.
+> Your Apple Health, Whoop, and Oura data — unified in a local SQLite database. In 60 seconds.
 
-Apple Health locks your biometrics in a 4GB XML file. Whoop buries yours in CSVs with inconsistent column names. Leo Core parses both in under 60 seconds and writes everything to a single, normalized SQLite database — Heart Rate, Sleep, Workouts, HRV, Recovery Score, all queryable with standard SQL.
+Apple Health locks your biometrics in a 4GB XML file. Whoop buries yours in CSVs. Oura scatters data across endpoints. Leo Core parses all three in under 60 seconds and writes everything to a single, normalized SQLite database — Heart Rate, Sleep, Workouts, HRV, Recovery Score, Blood Oxygen — all queryable with standard SQL.
 
 **Zero network requests. Runs locally. MIT licensed.**
 
@@ -10,6 +10,15 @@ Apple Health locks your biometrics in a 4GB XML file. Whoop buries yours in CSVs
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![Zero Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen)
 ![Status](https://img.shields.io/badge/status-active-success)
+
+---
+
+## 🧠 Leo Max — AI Health Coach (Coming Soon)
+
+Local LLM that analyses your data privately. Bloodwork history, wearable trends, medical literature — all on your Mac, nothing leaves your machine.
+
+**[Join the waitlist →](https://sandseb123.github.io/Leo-Health-Core)**
+Founding members get lifetime preferred pricing.
 
 ---
 
@@ -51,12 +60,12 @@ Apple Health locks your biometrics in a 4GB XML file. Whoop buries yours in CSVs
 ## Install
 
 ```bash
-git clone https://github.com/sandseb123/Leo_Health.git
-cd Leo_Health
+git clone https://github.com/sandseb123/Leo-Health-Core.git
+cd Leo-Health-Core
 bash install.sh
 ```
 
-That's it. Two commands are now available anywhere on your Mac:
+Two commands are now available anywhere on your Mac:
 
 ```bash
 leo          # view your health dashboard
@@ -67,51 +76,34 @@ leo-watch    # start watching Downloads for new exports
 
 ## Get your data in
 
-**Step 1 — Export from Apple Health (iPhone):**
+**Apple Health (iPhone):**
 1. Open the Health app
 2. Tap your profile picture → **Export All Health Data**
-3. AirDrop it to your Mac
+3. AirDrop it to your Mac — Leo detects and parses it automatically
 
-**Step 2 — Start the watcher:**
+**Whoop:** Open Whoop app → Profile → Export Data → check email for CSVs → AirDrop to Mac
+
+**Oura:** Go to [ouraring.com](https://ouraring.com) → Account → Data Export → Download → AirDrop to Mac
+
 ```bash
-leo-watch
+leo-watch    # start the watcher — detects exports within 10 seconds
 ```
-
-**Step 3 — AirDrop your export.zip**
-
-Leo detects it within 10 seconds, parses it automatically, and sends you a macOS notification when done. Your database is updated — no commands needed.
-
-**For Whoop:** Open Whoop app → Profile → Export Data → check email for CSVs → AirDrop them to your Mac. Leo auto-detects and ingests them too.
-
-**For Oura:** Go to [oura.com](https://ouraring.com) → Account → Data Export → Download, or open the Oura app → Profile → Export. You'll get CSV files for sleep, readiness, and activity — AirDrop them to your Mac and Leo handles the rest.
 
 ---
 
 ## Linux Support
 
-Leo Core runs on Linux too. AirDrop isn't available, but there are easy alternatives for getting your iPhone export to a Linux machine:
+Leo Core runs on Linux too. AirDrop isn't available, but there are easy alternatives:
 
 **Transfer via LocalSend (recommended — wireless, no account needed):**
 1. Install [LocalSend](https://localsend.org) on both your iPhone and Linux machine
-2. Open Health app → tap your profile picture → **Export All Health Data**
-3. Share → LocalSend → select your Linux machine
-4. File lands in `~/Downloads/` automatically
-5. `leo-watch` detects it within 10 seconds
+2. Export from Health app → Share → LocalSend → select your Linux machine
+3. File lands in `~/Downloads/` automatically — `leo-watch` picks it up
 
 **Transfer via email or Google Drive:**
-1. Open Health app → tap your profile picture → **Export All Health Data**
-2. Share → Mail or Google Drive → download to `~/Downloads/` on your Linux machine
+1. Export from Health app → Share → Mail or Google Drive
+2. Download to `~/Downloads/` on your Linux machine
 3. `leo-watch` picks it up automatically
-
-**Whoop on Linux:** same as Mac — export CSVs are emailed to you, download them to `~/Downloads/`
-
-**Oura on Linux:** go to [oura.com](https://oura.com) → Account → Data Export → download directly in your browser
-
----
-
-## 🧠 Leo Max — AI Health Coach (Coming Soon)
-Local LLM that analyses your data privately. Blood work history, wearable trends, medical literature — all on your Mac.
-[Join the waitlist →](https://sandseb123.github.io/Leo-Health-Core)
 
 ---
 
@@ -123,7 +115,6 @@ Leo watches your Downloads folder and automatically parses any health export the
 - Uses ~8MB RAM, near-zero CPU while idle
 - Never processes the same file twice
 - Sends a macOS notification when ingestion completes
-- Runs automatically on login (optional)
 
 **Run Leo automatically on every login:**
 ```bash
@@ -169,6 +160,7 @@ FROM workouts GROUP BY activity ORDER BY sessions DESC;
 | HRV | `hrv` | SDNN in milliseconds |
 | Sleep | `sleep` | REM, Deep, Core, Awake stages |
 | Workouts | `workouts` | Activity, duration, distance, calories |
+| Blood Oxygen | `blood_oxygen` | SpO₂ % |
 
 ### Whoop (CSV exports)
 | Data | Table | Metrics |
@@ -201,9 +193,9 @@ Your data lives in `~/.leo-health/leo.db` and never leaves your machine.
 
 ## Who this is for
 
-**Leo Core is a developer tool.** If you're comfortable with Terminal, git clone and `bash install.sh` gets you running in 2 minutes.
+**Leo Core** is an open-source developer tool. If you're comfortable with Terminal, `git clone` and `bash install.sh` gets you running in 2 minutes. Free forever, MIT licensed.
 
-**Not a developer?** Leo Pro (coming soon) is a one-click macOS app with a full dashboard — no Terminal required.
+**Leo Max** is the upcoming AI health coach layer — a local LLM that runs against your unified health database, cross-references medical literature, and lets you upload bloodwork PDFs to track lab panels over time. Nothing leaves your Mac. [Join the waitlist →](https://sandseb123.github.io/Leo-Health-Core)
 
 ---
 
@@ -214,15 +206,15 @@ leo_health/
 ├── parsers/
 │   ├── apple_health.py   # SAX streaming parser for export.zip
 │   ├── whoop.py          # Auto-detecting CSV parser
-│   └── oura.py           # Oura Ring CSV parser (readiness, sleep, activity)
+│   └── oura.py           # Oura Ring CSV parser
 ├── db/
 │   ├── schema.py         # SQLite schema — 6 tables
-│   └── ingest.py         # Writes both sources to unified DB
-├── status.py             # leo command — pretty terminal dashboard
-└── watcher.py            # leo-watch command — auto-ingest on AirDrop
+│   └── ingest.py         # Unified ingest for all sources
+├── status.py             # leo command — terminal dashboard
+└── watcher.py            # leo-watch — auto-ingest on AirDrop
 tests/
 └── test_parsers.py
-install.sh                # One-command installer for macOS
+install.sh                # One-command installer for macOS + Linux
 pyproject.toml
 ```
 
@@ -232,15 +224,17 @@ pyproject.toml
 
 - [x] Apple Health XML parser
 - [x] Whoop CSV parser
+- [x] Oura Ring CSV support
 - [x] Normalized SQLite schema
-- [x] `leo` status dashboard
+- [x] `leo` terminal dashboard
 - [x] `leo-watch` auto-ingest watcher
 - [x] AirDrop → auto-parse workflow
-- [x] Oura Ring CSV support
+- [x] Linux support
 - [ ] Fitbit CSV support
-- [ ] Garmin support
-- [ ] Leo Pro — AI Health Coach *(local LLM, 100% private)*
-- [ ] Leo Pro — macOS app *(no Terminal required)*
+- [ ] Garmin `.fit` support
+- [ ] Leo Max — AI Health Coach *(local LLM, fully private)*
+- [ ] Leo Max — bloodwork PDF/photo ingestion
+- [ ] Leo Max — macOS app *(no Terminal required)*
 
 ---
 
@@ -260,7 +254,7 @@ See [`good first issue`](../../issues?q=is%3Aissue+label%3A%22good+first+issue%2
 
 **Leo Core** — MIT. Free to use, modify, and distribute.
 
-**Leo Pro** (AI Coach + Dashboard) is a separate commercial product — coming soon.
+**Leo Max** (AI Coach) is a separate commercial product — [join the waitlist](https://sandseb123.github.io/Leo-Health-Core).
 
 ---
 
