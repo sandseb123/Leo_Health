@@ -4,157 +4,410 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Leo Health Max — Early Access</title>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&display=swap" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
       --blue: #1a3a8f;
+      --blue-mid: #2a52c9;
       --blue-light: #e8edf8;
       --green: #0d7a55;
       --dark: #0a0f1e;
       --gray: #5a6478;
       --border: #e2e6f0;
+      --bg: #f7f8fc;
     }
+
+    html { scroll-behavior: smooth; }
 
     body {
       font-family: 'DM Sans', sans-serif;
-      background: #f7f8fc;
+      background: var(--bg);
       color: var(--dark);
       min-height: 100vh;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding: 40px 20px;
+      padding: 48px 20px;
+      position: relative;
+      overflow-x: hidden;
     }
 
+    /* Ambient background glow */
     body::before {
       content: '';
       position: fixed;
-      top: -200px; left: 50%;
+      top: -20vh; left: 50%;
       transform: translateX(-50%);
-      width: 800px; height: 800px;
-      background: radial-gradient(circle, rgba(26,58,143,0.07) 0%, transparent 70%);
+      width: 900px; height: 900px;
+      background: radial-gradient(circle, rgba(26,58,143,0.06) 0%, transparent 68%);
       pointer-events: none;
-      animation: pulse 6s ease-in-out infinite;
+      animation: ambientPulse 8s ease-in-out infinite;
     }
 
-    @keyframes pulse {
-      0%, 100% { transform: translateX(-50%) scale(1); opacity: 0.7; }
-      50% { transform: translateX(-50%) scale(1.1); opacity: 1; }
+    body::after {
+      content: '';
+      position: fixed;
+      bottom: -10vh; right: -10vw;
+      width: 600px; height: 600px;
+      background: radial-gradient(circle, rgba(13,122,85,0.04) 0%, transparent 70%);
+      pointer-events: none;
     }
 
+    @keyframes ambientPulse {
+      0%, 100% { opacity: 0.6; transform: translateX(-50%) scale(1); }
+      50% { opacity: 1; transform: translateX(-50%) scale(1.08); }
+    }
+
+    /* Card */
     .card {
       background: white;
       border: 1px solid var(--border);
-      border-radius: 20px;
-      max-width: 580px;
+      border-radius: 24px;
+      max-width: 600px;
       width: 100%;
-      padding: 56px 48px;
+      padding: 56px 52px 48px;
       text-align: center;
-      box-shadow: 0 4px 40px rgba(10,15,30,0.08);
-      animation: fadeUp 0.6s ease both;
+      box-shadow: 0 2px 24px rgba(10,15,30,0.06), 0 12px 48px rgba(10,15,30,0.04);
+      animation: fadeUp 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+      position: relative;
+      z-index: 1;
     }
 
     @keyframes fadeUp {
-      from { opacity: 0; transform: translateY(20px); }
+      from { opacity: 0; transform: translateY(28px); }
       to { opacity: 1; transform: translateY(0); }
     }
 
+    /* Logo */
+    .logo {
+      width: 52px; height: 52px;
+      background: linear-gradient(135deg, var(--blue) 0%, var(--blue-mid) 100%);
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 28px;
+      box-shadow: 0 4px 16px rgba(26,58,143,0.25);
+      font-size: 24px;
+    }
+
+    /* Eyebrow badge */
     .eyebrow {
       display: inline-flex;
       align-items: center;
       gap: 8px;
       background: var(--blue-light);
       color: var(--blue);
-      font-size: 12px;
+      font-size: 11.5px;
       font-weight: 500;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.09em;
       text-transform: uppercase;
       padding: 6px 14px;
       border-radius: 100px;
-      margin-bottom: 28px;
+      margin-bottom: 24px;
     }
 
-    .eyebrow::before {
-      content: '';
+    .eyebrow-dot {
       width: 6px; height: 6px;
       background: var(--blue);
       border-radius: 50%;
-      animation: blink 2s ease infinite;
+      animation: blink 2.5s ease infinite;
     }
 
     @keyframes blink {
       0%, 100% { opacity: 1; }
-      50% { opacity: 0.3; }
+      50% { opacity: 0.25; }
     }
 
+    /* Heading */
     h1 {
       font-family: 'DM Serif Display', serif;
-      font-size: 2.6em;
+      font-size: clamp(2rem, 5vw, 2.75rem);
       color: var(--dark);
-      line-height: 1.15;
-      margin-bottom: 16px;
-      letter-spacing: -0.02em;
+      line-height: 1.12;
+      margin-bottom: 18px;
+      letter-spacing: -0.025em;
     }
 
-    h1 span { color: var(--blue); }
+    h1 em {
+      font-style: italic;
+      color: var(--blue);
+    }
 
     .subtitle {
-      font-size: 1.05em;
+      font-size: 1.02em;
       color: var(--gray);
-      line-height: 1.7;
+      line-height: 1.75;
       margin-bottom: 36px;
       font-weight: 300;
+      max-width: 440px;
+      margin-left: auto;
+      margin-right: auto;
     }
 
+    /* Feature list */
     .features {
       display: flex;
       flex-direction: column;
-      gap: 12px;
-      margin-bottom: 36px;
+      gap: 11px;
+      margin-bottom: 32px;
       text-align: left;
     }
 
     .feature {
       display: flex;
       align-items: flex-start;
-      gap: 12px;
-      font-size: 0.92em;
+      gap: 13px;
+      font-size: 0.91em;
       color: #374151;
-      line-height: 1.5;
+      line-height: 1.55;
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: #fafbfd;
+      border: 1px solid #eef0f6;
+      transition: border-color 0.2s, background 0.2s;
+    }
+
+    .feature:hover {
+      background: var(--blue-light);
+      border-color: rgba(26,58,143,0.15);
     }
 
     .feature-icon {
-      width: 22px; height: 22px;
+      width: 26px; height: 26px;
       background: var(--blue-light);
-      border-radius: 6px;
+      border-radius: 7px;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 12px;
+      font-size: 13px;
       flex-shrink: 0;
       margin-top: 1px;
     }
 
+    .feature-text strong {
+      display: block;
+      font-weight: 500;
+      color: var(--dark);
+      margin-bottom: 2px;
+      font-size: 0.93em;
+    }
+
+    .feature-text span {
+      color: var(--gray);
+      font-size: 0.88em;
+    }
+
+    /* Divider */
     .divider {
       border: none;
       border-top: 1px solid var(--border);
-      margin: 32px 0;
+      margin: 28px 0;
     }
 
+    /* Founding member callout */
+    .pricing {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      background: linear-gradient(135deg, #f0fdf8 0%, #e8f4fd 100%);
+      border: 1px solid rgba(13,122,85,0.2);
+      border-radius: 12px;
+      padding: 12px 20px;
+      margin-bottom: 28px;
+      font-size: 0.9em;
+    }
+
+    .pricing-badge {
+      background: var(--green);
+      color: white;
+      font-size: 10.5px;
+      font-weight: 500;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 3px 8px;
+      border-radius: 6px;
+      white-space: nowrap;
+    }
+
+    .pricing-text {
+      color: #1a4a38;
+      font-weight: 400;
+    }
+
+    /* Beehiiv embed wrapper */
     .form-wrapper {
       width: 100%;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      background: #fafbfd;
     }
 
     .form-wrapper iframe {
+      display: block;
       width: 100% !important;
       max-width: 100% !important;
-      border-radius: 12px;
-      display: block;
+      border-radius: 0 !important;
     }
 
-    .stats {
+    /* Social proof */
+    .social-proof {
       display: flex;
-      jus
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      margin-top: 28px;
+      flex-wrap: wrap;
+    }
+
+    .stat {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 0.82em;
+      color: var(--gray);
+    }
+
+    .stat-dot {
+      width: 5px; height: 5px;
+      background: var(--border);
+      border-radius: 50%;
+    }
+
+    .stat strong {
+      color: var(--dark);
+      font-weight: 500;
+    }
+
+    /* Footer link */
+    .footer-link {
+      margin-top: 24px;
+      font-size: 0.82em;
+      color: var(--gray);
+    }
+
+    .footer-link a {
+      color: var(--blue);
+      text-decoration: none;
+      font-weight: 500;
+    }
+
+    .footer-link a:hover {
+      text-decoration: underline;
+    }
+
+    /* Privacy note */
+    .privacy-note {
+      margin-top: 14px;
+      font-size: 0.78em;
+      color: #9ca3af;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+    }
+
+    @media (max-width: 560px) {
+      .card { padding: 40px 28px 36px; }
+      h1 { font-size: 2rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+
+    <div class="logo">🦁</div>
+
+    <div class="eyebrow">
+      <span class="eyebrow-dot"></span>
+      Early Access — Leo Max
+    </div>
+
+    <h1>Your health data,<br>analyzed <em>locally</em></h1>
+
+    <p class="subtitle">
+      An AI health coach that runs entirely on your Mac. Connects your wearable data, bloodwork history, and medical literature — all processed locally, nothing leaves your machine.
+    </p>
+
+    <div class="features">
+      <div class="feature">
+        <div class="feature-icon">🧠</div>
+        <div class="feature-text">
+          <strong>Local LLM Coach</strong>
+          <span>Ask questions about your HRV, sleep, workouts — answered by AI running on your hardware</span>
+        </div>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">🔒</div>
+        <div class="feature-text">
+          <strong>Zero cloud, zero tracking</strong>
+          <span>All processing happens at ~/.leo-health/leo.db — your biometrics never touch a server</span>
+        </div>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">📊</div>
+        <div class="feature-text">
+          <strong>Apple Health + Whoop unified</strong>
+          <span>HRV, SpO₂, sleep stages, HR zones — every metric in one queryable database</span>
+        </div>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">📚</div>
+        <div class="feature-text">
+          <strong>Medical literature RAG</strong>
+          <span>Insights grounded in research, not generic wellness advice</span>
+        </div>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">🩸</div>
+        <div class="feature-text">
+          <strong>Bloodwork history — photo or PDF</strong>
+          <span>Snap your annual lab report or upload the PDF. Leo extracts your panels and tracks trends across years — cholesterol, glucose, thyroid, vitamins and more</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="pricing">
+      <span class="pricing-badge">Founding Member</span>
+      <span class="pricing-text">Join early — founding members get <strong>lifetime preferred pricing</strong> when Leo Max launches</span>
+    </div>
+
+    <div class="form-wrapper">
+      <script async src="https://subscribe-forms.beehiiv.com/embed.js"></script>
+      <iframe
+        src="https://subscribe-forms.beehiiv.com/5189f4c3-31c7-4cdf-af8b-7767f1684f0f"
+        class="beehiiv-embed"
+        data-test-id="beehiiv-embed"
+        frameborder="0"
+        scrolling="no"
+        style="width:100%; height:291px; margin:0; border-radius:0; background-color:transparent; box-shadow:none; max-width:100%;">
+      </iframe>
+    </div>
+
+    <div class="social-proof">
+      <div class="stat"><strong>31</strong> GitHub stars</div>
+      <div class="stat-dot"></div>
+      <div class="stat"><strong>5</strong> forks</div>
+      <div class="stat-dot"></div>
+      <div class="stat"><strong>2</strong> contributors</div>
+      <div class="stat-dot"></div>
+      <div class="stat"><strong>MIT</strong> licensed</div>
+    </div>
+
+    <div class="footer-link">
+      Already want the free version? <a href="https://github.com/sandseb123/Leo-Health-Pro" target="_blank">Grab it on GitHub →</a>
+    </div>
+
+    <p class="privacy-note">
+      🔐 No spam. Unsubscribe anytime. Your email is only used for Leo Max launch updates.
+    </p>
+
+  </div>
+
+</body>
+</html>
