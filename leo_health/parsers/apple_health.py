@@ -233,7 +233,9 @@ def parse(zip_path: str) -> dict:
         for gpx_path in gpx_files:
             workout_start = _gpx_workout_start(gpx_path)
             with zf.open(gpx_path) as gpx_file:
-                routes.extend(_parse_gpx(gpx_file.read(), workout_start))
+                data = gpx_file.read()
+                if data:
+                    routes.extend(_parse_gpx(data, workout_start))
 
     return {
         "heart_rate": handler.heart_rate,
