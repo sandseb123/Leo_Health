@@ -7,70 +7,40 @@ echo ""
 
 # Clone check
 if [ ! -f "leo_health/status.py" ]; then
-  echo "Error: Run this from inside the Leo_Health folder"
+  echo "Error: Run this from inside the Leo-Health-Core folder"
   exit 1
 fi
 
-INSTALL_DIR="$(pwd)"
-
-# Detect shell config file
-detect_shell_config() {
-  local shell_name
-  shell_name="$(basename "$SHELL")"
-
-  case "$shell_name" in
-    zsh)  echo "$HOME/.zshrc" ;;
-    bash)
-      if [ -f "$HOME/.bash_profile" ]; then
-        echo "$HOME/.bash_profile"
-      else
-        echo "$HOME/.bashrc"
-      fi
-      ;;
-    fish) echo "$HOME/.config/fish/config.fish" ;;
-    *)    echo "$HOME/.profile" ;;
-  esac
-}
-
-SHELL_CONFIG="$(detect_shell_config)"
-SHELL_NAME="$(basename "$SHELL")"
-
-echo "Detected shell: $SHELL_NAME"
-echo "Writing to:     $SHELL_CONFIG"
-echo ""
-
-# Fish uses a different syntax
-if [ "$SHELL_NAME" = "fish" ]; then
-  mkdir -p "$(dirname "$SHELL_CONFIG")"
-  echo "set -x PYTHONPATH \"$INSTALL_DIR\" \$PYTHONPATH" >> "$SHELL_CONFIG"
-  echo "alias leo=\"python3 -m leo_health.status\"" >> "$SHELL_CONFIG"
-  echo "alias leo-watch=\"python3 -m leo_health.watcher\"" >> "$SHELL_CONFIG"
-  echo "alias leo-dash=\"python3 -m leo_health.dashboard\"" >> "$SHELL_CONFIG"
-else
-  echo "export PYTHONPATH=\"$INSTALL_DIR:\$PYTHONPATH\"" >> "$SHELL_CONFIG"
-  echo "alias leo=\"python3 -m leo_health.status\"" >> "$SHELL_CONFIG"
-  echo "alias leo-watch=\"python3 -m leo_health.watcher\"" >> "$SHELL_CONFIG"
-  echo "alias leo-dash=\"python3 -m leo_health.dashboard\"" >> "$SHELL_CONFIG"
+# Check pip is available
+if ! command -v pip3 &>/dev/null && ! command -v pip &>/dev/null; then
+  echo "Error: pip not found. Install Python 3.9+ from python.org and try again."
+  exit 1
 fi
 
-echo "✓ Installed! Run this to activate the commands in your current terminal:"
+PIP="pip3"
+command -v pip3 &>/dev/null || PIP="pip"
+
+echo "Installing Leo Health..."
 echo ""
-echo "  source $SHELL_CONFIG"
+
+# Install in editable mode — creates leo, leo-watch, leo-dash commands
+# Uses pyproject.toml entry points, no PYTHONPATH changes
+$PIP install -e . --quiet
+
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "pip install failed. Try:"
+  echo "  pip3 install -e ."
+  exit 1
+fi
+
 echo ""
-echo "Or just open a new terminal tab. Then you'll have:"
+echo "✓ Installed! The following commands are now available:"
 echo ""
 echo "  leo          → print health stats in the terminal"
 echo "  leo-watch    → watch Downloads folder for new exports"
 echo "  leo-dash     → open the web dashboard in your browser"
 echo ""
-if [ "$SHELL_NAME" = "fish" ]; then
-  echo "  (fish: restart your terminal or run: source $SHELL_CONFIG)"
-else
-  OS="$(uname -s)"
-  if [ "$OS" = "Darwin" ]; then
-    echo "AirDrop your Apple Health export.zip to ~/Downloads, then run: leo-watch"
-  else
-    echo "Transfer your Apple Health export.zip to ~/Downloads (LocalSend or email),"
-    echo "then run: leo-watch"
-  fi
-fi
+echo "If the commands aren't found, try opening a new terminal tab."
+echo ""
+echo "AirDrop your Apple Health export.zip to ~/Downloads, then run: leo-watch"
