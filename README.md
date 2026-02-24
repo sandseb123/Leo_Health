@@ -25,34 +25,11 @@ Founding members get lifetime preferred pricing.
 ## What it looks like
 
 ```
-╔══════════════════════════════════════════════╗
-║           Leo Health — Status                ║
-╚══════════════════════════════════════════════╝
+## What it looks like
 
-  ❤️  Heart Rate  (324,116 readings)
-      Average:  84 BPM  (min 32 · max 199)
-      Resting:  56 BPM  (1,023 readings)
+![Leo Health Dashboard](assets/dashboard-overview.png)
 
-  💜  HRV  (6,519 readings)
-      apple_health     78.3 ms  (min 12.4 · max 422.7)
-
-  😴  Sleep  (12,195 sessions)
-      In Bed          ████████████████  6,779
-      Core Sleep      ████░░░░░░░░░░░░  2,050
-      REM             █░░░░░░░░░░░░░░░  796
-      Deep Sleep      █░░░░░░░░░░░░░░░  589
-
-  🏃  Workouts  (1,344 total)
-      running               ████████████  570  40min avg
-      strength training     ██████████░░  476  41min avg
-      walking               █████░░░░░░░  243  63min avg
-
-  Data range: 2021-06-18 → 2026-02-16
-
-  ╔══════════════════════════════════════════╗
-  ║  Database: ~/.leo-health/leo.db          ║
-  ║  Zero network requests. 100% local.      ║
-  ╚══════════════════════════════════════════╝
+![Leo Health Sleep Breakdown](assets/dashboard-sleep.png)
 ```
 
 ---
