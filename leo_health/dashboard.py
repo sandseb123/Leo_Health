@@ -2684,7 +2684,6 @@ def main():
             print("\n  Stopped. Your data stays on your machine. 🔒\n")
             sys.exit(0)
 
-
 if __name__ == "__main__":
     main()
 
