@@ -24,13 +24,13 @@ Founding members get lifetime preferred pricing.
 
 ## What it looks like
 
-```
+
 ## What it looks like
 
 ![Leo Health Dashboard](assets/dashboard-overview.png)
 
 ![Leo Health Sleep Breakdown](assets/dashboard-sleep.png)
-```
+
 
 ---
 
