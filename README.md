@@ -22,8 +22,6 @@ Founding members get lifetime preferred pricing.
 
 ---
 
-## What it looks like
-
 
 ## What it looks like
 
