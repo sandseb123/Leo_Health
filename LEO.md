@@ -32,7 +32,6 @@ Leo_Health/
 │       ├── __init__.py
 │       ├── schema.py            # SQLite schema + connection helpers
 │       └── ingest.py            # DB write logic
-├── status.py                    # Root-level wrapper (legacy)
 ├── install.sh                   # macOS installer (modifies ~/.zshrc)
 ├── pyproject.toml               # PEP 517/518 build config
 └── README.md                    # User-facing documentation
@@ -51,9 +50,6 @@ bash install.sh        # adds aliases to ~/.zshrc
 ```
 
 The installer appends to `~/.zshrc`:
-- `export PYTHONPATH="<install_dir>:$PYTHONPATH"`
-- `alias leo="python3 -m leo_health.status"`
-- `alias leo-watch="python3 -m leo_health.watcher"`
 
 ### Manual / Dev Setup
 
@@ -73,7 +69,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-> **Note**: No tests exist yet. The test infrastructure (pytest) is configured but the test suite has not been written. Adding tests is a high-value contribution.
+> **Note**: Tests are in `tests/test_core.py` — run with `pytest tests/`
 
 ---
 
@@ -139,7 +135,7 @@ Whoop CSV export(s)       →  parsers/whoop.py          →  db/ingest.py  → 
   - Apple Health: `.zip` files with "export", "apple_health", or "health" in name
   - Whoop: `.csv` files with "whoop", "recovery", "strain", or "sleep" in name
 - File stability check: waits until file size is stable over 2 seconds (handles AirDrop mid-write)
-- Deduplication: MD5 of first 64 KB stored in `~/.leo-health/processed.txt`
+- Deduplication: SHA-256 of full file stored in `~/.leo-health/processed.txt`
 - macOS notifications via `osascript` (controlled by `SILENT = True` constant)
 
 #### `leo_health/status.py`
@@ -181,7 +177,8 @@ sleep(id, source, stage, start, end, recorded_at, device,
 workouts(id, source, activity, duration_minutes, distance_km, calories,
          recorded_at, end, device, created_at)
 -- activity: 'running' | 'cycling' | 'walking' | 'swimming' | 'hiit' |
---           'strength_training' | 'yoga' | 'functional_strength'
+--                     'strength_training' | 'yoga' | 'functional_strength'
+-- active_calories, avg_cadence, avg_hr, max_hr also stored
 -- distance_km converted from miles (Apple stores in miles)
 
 whoop_recovery(id, source, recorded_at, recovery_score, hrv_ms,
@@ -212,7 +209,7 @@ whoop_strain(id, source, recorded_at, day_strain, calories,
 
 ### Deduplication
 - DB level: `INSERT OR IGNORE` — relies on SQLite's unique constraint enforcement
-- File level: MD5 fingerprint of first 64 KB stored in `~/.leo-health/processed.txt`
+- File level: SHA-256 of full file stored in ~/.leo-health/processed.txt
 - When adding new tables, always use `INSERT OR IGNORE` (not `INSERT OR REPLACE`)
 
 ### Adding a New Data Source
