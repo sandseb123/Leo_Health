@@ -2813,7 +2813,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         p = urllib.parse.urlparse(self.path)
         qs = urllib.parse.parse_qs(p.query)
-        d     = int(qs.get("days",  ["30"])[0])
+        try:
+            d = int(qs.get("days", ["30"])[0])
+            if d < 1 or d > 3650:
+                d = 30
+        except (ValueError, TypeError):
+            d = 30
         start = qs.get("start", [""])[0]
         end   = qs.get("end",   [""])[0]
         date  = qs.get("date",  [""])[0]
@@ -2862,6 +2867,7 @@ def _run_app_window(url):
         import tkinter as tk
     except ImportError:
         # No Tkinter — just keep alive
+        print("  ⚠️  Tkinter not found (common with Homebrew Python). Dashboard is running at http://127.0.0.1:5380 — open it manually in your browser.")
         while True: time.sleep(60)
         return
 
