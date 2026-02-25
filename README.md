@@ -31,20 +31,20 @@ Founding members get lifetime preferred pricing.
 ---
 
 ## Install
-
 ```bash
 git clone https://github.com/sandseb123/Leo-Health-Core.git
 cd Leo-Health-Core
-bash install.sh
+pip3 install -e .
 ```
 
-Two commands are now available anywhere on your Mac:
-
+Three commands are now available anywhere on your Mac:
 ```bash
-leo          # terminal dashboard
-leo-watch    # start watching Downloads for new exports  
+leo          # view your health dashboard
+leo-watch    # start watching Downloads for new exports
 leo-dash     # open full web dashboard in browser
 ```
+
+> **Note:** If `pip3` is not found, try `pip install -e .` or install Python 3.9+ from [python.org](https://python.org)
 
 ---
 
@@ -134,6 +134,10 @@ grep -r "import urllib\|import http\|import requests\|import socket\|http.client
 You'll see three results, all in `leo_health/dashboard.py` — these are Python stdlib imports used to run a **local web server** on your own machine (localhost only). No data is sent anywhere. No outbound connections. No tracking.
 
 Your data lives in `~/.leo-health/leo.db` and never leaves your machine.
+
+**Threat model:** Dashboard binds to localhost only. Anyone with 
+local machine access can read the DB. No authentication — 
+designed for single-user desktop use only.
 
 ---
 
