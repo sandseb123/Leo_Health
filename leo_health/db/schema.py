@@ -168,7 +168,9 @@ def get_connection(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     Returns:
         sqlite3.Connection with row_factory set for dict-like access
     """
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    db_dir = os.path.dirname(db_path)
+    os.makedirs(db_dir, exist_ok=True)
+    os.chmod(db_dir, 0o700)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")   # Better concurrent read performance

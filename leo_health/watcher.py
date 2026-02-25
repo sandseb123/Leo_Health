@@ -48,10 +48,11 @@ def _notify(title: str, message: str):
 # ── File fingerprinting ───────────────────────────────────────────────────────
 
 def _file_hash(filepath: str) -> str:
-    """MD5 of first 64KB — fast enough to fingerprint without reading whole file."""
-    h = hashlib.md5()
+    """SHA-256 of full file — reliable deduplication."""
+    h = hashlib.sha256()
     with open(filepath, "rb") as f:
-        h.update(f.read(65536))
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
     return h.hexdigest()
 
 
