@@ -11,16 +11,39 @@ from .schema import create_schema, DEFAULT_DB_PATH
 
 # ── Insert helpers ────────────────────────────────────────────────────────────
 
+# Allowlist of valid tables and their permitted columns
+_ALLOWED_COLUMNS: dict[str, set] = {
+    "heart_rate":     {"source","metric","value","unit","recorded_at","device"},
+    "hrv":            {"source","metric","value","unit","recorded_at","device"},
+    "sleep":          {"source","stage","start","end","recorded_at","device"},
+    "workouts":       {"source","activity","duration_minutes","distance_km",
+                       "calories","recorded_at","end","device",
+                       "active_calories","avg_cadence","avg_hr","max_hr"},
+    "whoop_recovery": {"source","recorded_at","recovery_score","hrv_ms",
+                       "resting_heart_rate","spo2","skin_temp"},
+    "whoop_strain":   {"source","recorded_at","day_strain","calories",
+                       "avg_hr","max_hr"},
+    "blood_oxygen":   {"source","value","unit","recorded_at","device"},
+    "routes":         {"workout_start","timestamp","latitude","longitude","altitude_m"},
+}
+
 def _insert_many(conn: sqlite3.Connection, table: str, rows: list[dict]) -> int:
     """
-    Bulk insert rows into a table. Skips rows missing required fields.
+    Bulk insert rows into a table using an allowlist for safety.
     Returns number of rows inserted.
     """
     if not rows:
         return 0
 
-    # Build INSERT from first row's keys
-    keys = list(rows[0].keys())
+    allowed = _ALLOWED_COLUMNS.get(table)
+    if allowed is None:
+        raise ValueError(f"Unknown table: {table!r}")
+
+    # Only use keys that are in the allowlist
+    keys = [k for k in rows[0].keys() if k in allowed]
+    if not keys:
+        return 0
+
     placeholders = ", ".join("?" for _ in keys)
     cols = ", ".join(keys)
     sql = f"INSERT OR IGNORE INTO {table} ({cols}) VALUES ({placeholders})"
