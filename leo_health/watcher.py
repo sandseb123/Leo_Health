@@ -37,7 +37,9 @@ def _notify(title: str, message: str):
     if SILENT:
         return
     try:
-        script = f'display notification "{message}" with title "{title}" sound name "Glass"'
+        safe_msg   = message.replace("\\", "\\\\").replace('"', '\\"')
+        safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
+        script = f'display notification "{safe_msg}" with title "{safe_title}" sound name "Glass"'
         subprocess.run(["osascript", "-e", script], check=False, capture_output=True)
     except Exception:
         pass  # Non-macOS or osascript not available — fail silently
