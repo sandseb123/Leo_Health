@@ -24,7 +24,7 @@ from .parsers import apple_health, whoop as whoop_parser, fitbit as fitbit_parse
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-WATCH_FOLDER = Path.home() / "Downloads"
+WATCH_FOLDER = Path(os.environ.get("LEO_WATCH_FOLDER", str(Path.home() / "Downloads")))
 PROCESSED_LOG = Path.home() / ".leo-health" / "processed.txt"
 CHECK_INTERVAL = 10  # seconds between scans
 SILENT = True  # set to False to enable macOS notifications

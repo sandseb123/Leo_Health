@@ -5,13 +5,15 @@ services:
     build: .
     container_name: leo-health
     ports:
-      - "5380:5380"
+      - "127.0.0.1:5380:5380"
     volumes:
       - leo-data:/data
-      - ./imports:/imports  # drop exports here to ingest
+      - ./imports:/imports
     environment:
       - LEO_DB_PATH=/data/leo.db
+      - LEO_HOST=0.0.0.0
       - LEO_WATCH_FOLDER=/imports
+    user: "10001:10001"
     restart: unless-stopped
 
 volumes:
