@@ -48,6 +48,41 @@ leo-dash     # open full web dashboard in browser
 
 ---
 
+## Docker
+
+Run Leo Health in a container — works on macOS, Linux, and Windows.
+```bash
+# Clone the repo
+git clone https://github.com/sandseb123/Leo-Health-Core.git
+cd Leo-Health-Core
+
+# Start the dashboard
+docker compose up -d
+
+# Open in browser
+open http://localhost:5380
+```
+
+Drop your health exports into the `imports/` folder — Leo will detect and ingest them automatically.
+```bash
+# Import Apple Health export
+cp ~/Downloads/export.zip imports/
+
+# Import Whoop CSVs
+cp ~/Downloads/whoop_recovery.csv imports/
+```
+
+Data is stored in a Docker volume (`leo-data`) and persists across container restarts.
+```bash
+# Stop
+docker compose down
+
+# View logs
+docker compose logs -f
+```
+
+---
+
 ## Get your data in
 
 **Apple Health (iPhone):**
