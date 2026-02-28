@@ -213,6 +213,37 @@ pyproject.toml
 
 ---
 
+## Architecture Overview
+
+```mermaid
+flowchart TD
+
+    subgraph External Inputs
+        A[Apple Health Export XML]
+        B[Whoop CSV Export]
+        C[AirDrop Watch Folder]
+    end
+
+    subgraph Leo Health Core
+        D[Streaming SAX Parser]
+        E[CSV Parser]
+        F[Normalization & Validation]
+        G[(SQLite<br/>User-Owned DB)]
+        H[Query & Trend Engine]
+        I[Local Dashboard<br/>localhost only]
+    end
+
+    A --> D
+    B --> E
+    C --> D
+
+    D --> F
+    E --> F
+    F --> G
+    G --> H
+    H --> I
+```
+
 ## Roadmap
 
 - [x] Apple Health XML parser
