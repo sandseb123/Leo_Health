@@ -244,11 +244,19 @@ See [`good first issue`](../../issues?q=is%3Aissue+label%3A%22good+first+issue%2
 
 ---
 
+## Built With AI Assistance
+
+Leo Health was built with AI assistance and reviewed, tested, and maintained by [@sandseb123](https://github.com/sandseb123). All security fixes, architectural decisions, and code reviews were done by a human. If you find issues or have questions, open a GitHub issue or reach out directly.
+
+---
+
 ## License
 
 **Leo Core** — MIT. Free to use, modify, and distribute.
 
 **Leo Max** (AI Coach) is a separate commercial product — [join the waitlist](https://sandseb123.github.io/Leo-Health-Core).
+
+
 
 ---
 
