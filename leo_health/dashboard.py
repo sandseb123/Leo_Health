@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 DB_PATH = os.path.join(os.path.expanduser("~"), ".leo-health", "leo.db")
-HOST    = "127.0.0.1"
+HOST = os.environ.get("LEO_HOST", "127.0.0.1")
 PORT    = 5380
 IS_APP  = getattr(sys, "frozen", False)   # True when packaged by PyInstaller
 

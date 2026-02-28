@@ -1,0 +1,18 @@
+version: "3.8"
+
+services:
+  leo-health:
+    build: .
+    container_name: leo-health
+    ports:
+      - "5380:5380"
+    volumes:
+      - leo-data:/data
+      - ./imports:/imports  # drop exports here to ingest
+    environment:
+      - LEO_DB_PATH=/data/leo.db
+      - LEO_WATCH_FOLDER=/imports
+    restart: unless-stopped
+
+volumes:
+  leo-data:

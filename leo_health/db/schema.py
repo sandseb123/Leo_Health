@@ -11,7 +11,7 @@ from pathlib import Path
 
 # ── Default DB location ───────────────────────────────────────────────────────
 
-DEFAULT_DB_PATH = os.path.join(Path.home(), ".leo-health", "leo.db")
+DEFAULT_DB_PATH = os.environ.get("LEO_DB_PATH", os.path.join(Path.home(), ".leo-health", "leo.db"))
 
 
 # ── Schema SQL ────────────────────────────────────────────────────────────────
