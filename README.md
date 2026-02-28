@@ -59,6 +59,7 @@ cd Leo-Health-Core
 # Start the dashboard
 docker compose up -d
 
+
 # Open in browser
 open http://localhost:5380
 ```
@@ -70,6 +71,15 @@ cp ~/Downloads/export.zip imports/
 
 # Import Whoop CSVs
 cp ~/Downloads/whoop_recovery.csv imports/
+```
+
+**Or run directly without compose:**
+```bash
+docker run \
+  -p 127.0.0.1:5380:5380 \
+  -v ~/.leo-health:/home/leo/.leo-health \
+  -e LEO_HOST=0.0.0.0 \
+  leo-health
 ```
 
 Data is stored in a Docker volume (`leo-data`) and persists across container restarts.
