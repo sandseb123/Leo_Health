@@ -10,6 +10,7 @@ Apple Health locks your biometrics in a 4GB XML file. Whoop buries yours in CSVs
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![Zero Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen)
 ![Status](https://img.shields.io/badge/status-active-success)
+[![CI](https://github.com/sandseb123/Leo-Health-Core/actions/workflows/ci.yml/badge.svg)](https://github.com/sandseb123/Leo-Health-Core/actions/workflows/ci.yml)
 
 ---
 
